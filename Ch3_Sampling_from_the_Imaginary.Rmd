@@ -1,0 +1,215 @@
+---
+title: "Ch3_Sampling_the_Imaginary"
+author: "Michael Rose"
+date: "June 8, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+```
+
+# Sampling the Imaginary 
+
+```{r}
+# Given a positive test result for vampirism, we want to find the probability that we are a vampire, given a positive result. (Pr(Vampire) = 0.001)
+PrPV <- 0.95 
+PrPM <- 0.01 
+PrV <- 0.001
+PrP <- PrPV * PrV + PrPM * (1 - PrV)
+(PrVP <- PrPV*PrV / PrP)
+# 8.7% chance
+```
+
+Given a posterior distribution, we can imagine drawing samples from it. The sample events in this case are parameter values. In the Bayesian framework, we treat parameter distributions as relative plausiblity, not as any physical random process. 
+
+There are good reasons to adopt the sampling approach: 
+  1. Working with samples transforms a problem in calculus into a problem in data summary, into a frequency format problem. 
+  2. Some of the most capable methods of computing the posterior produce nothing but samples, such as variants of MCMC. 
+  
+In this chapter we will begin to use samples to summarize and simulate model output. 
+
+## 3.1 | Sampling from a grid-approximate posterior 
+
+```{r}
+# generate samples (posterior for globe tossing model) 
+p_grid <- seq(from = 0, to = 1, length.out = 1000)
+prior <- rep(1, 1000)
+likelihood <- dbinom(6, size = 9, prob = p_grid)
+posterior <- likelihood * prior 
+posterior <- posterior / sum(posterior)
+
+# now we will draw 10,000 samples from our posterior, which will be distributed ~Posterior 
+samples <- sample(p_grid, prob = posterior, size = 1e4, replace = TRUE)
+
+plot(samples)
+dens(samples)
+```
+
+## 3.2 | Sampling to Summarize 
+
+Once we have generated our models posterior distribution, the models work is done - and our work begins. Now we must summarize the model. 
+
+Common questions include: 
+  1. How much posterior probability lies below some parameter value? 
+  2. How much posterior probability lies between 2 parameter values? 
+  3. Which parameter value marks the lower 5% of the posterior probability? 
+  4. Which range of parameter values contains 90% of the posterior probability? 
+  5. Which parameter value has the highest posterior probability? 
+  
+These questions can be divided into questions about 
+  1. intervals of defined boundaries 
+  2. intervals of defined probability mass
+  3. point estimates 
+  
+```{r}
+# intervals of defined boundaries, e.g. posterior probability that the proportion of water is less than 0.5 
+
+# add up posterior probability where p < 0.5, using grid approximation
+sum(posterior[p_grid < 0.5])
+
+# again with sampling from the posterior 
+sum(samples < 0.5) / 1e4
+
+# find posterior between .5 and .75 
+sum(samples > 0.5 & samples < 0.75) / 1e4
+```
+
+### Intervals of defined mass (Confidence/Credible Interval)
+
+```{r}
+# find how much of the posterior contains 80% of the probability 
+quantile(samples, 0.8)
+
+# find the middle 80% interval (10% and 90%)
+quantile(samples, c(0.1, 0.9))
+```
+
+We can call these types of intervals above **Percentile Intervals**. 
+
+```{r}
+p_grid <- seq(from = 0, to = 1, length.out = 1000)
+prior <- rep(1, 1000)
+likelihood <- dbinom(3, size = 3, prob = p_grid)
+posterior <- likelihood * prior 
+posterior <- posterior / sum(posterior)
+
+samples <- sample(p_grid, size = 1e4, replace=TRUE, prob = posterior)
+
+# calculate 50% of posterior 
+PI(samples, prob = 0.5)
+```
+
+We can also find the **Highest Posterior Density Interval**. The HPDI is the narrowest interval containing the specified probability mass. If we want an interval that best represent the paramater values most consistent with the data, then we want the densest of intervals.
+
+Disadvantages of HPDI include being more computationally internsive than PI and suffering from greater simulation variance (it is sensitive to how many samples we draw from the posterior).
+
+```{r}
+HPDI(samples, prob = 0.8)
+```
+
+### Point Estimates 
+
+Generally, we don't need to specify a point because our posterior gives us a range of values and their likelihoods. If we need to, there are ways of doing this though. 
+
+We can report the parameter with the highest posterior probability, the maximum a posteriori (MAP) estimate. 
+
+```{r}
+# compute MAP 
+p_grid[which.max(posterior)]
+
+# or if we have samples from the posterior, we can still approximate the same point 
+chainmode(samples, adj = 0.01)
+
+# Why use mode over posterior mean or median? 
+mean(samples)
+median(samples)
+```
+
+These are 3 distinct points giving us point summaries. 
+
+One way to go beyond using the entire posterior as the estimate is to choose a **Loss Function**. 
+A loss function is a rule that tells us the cost associated with using any particular point estimate. 
+The key insight is that different loss functions imply different point estimates. 
+
+With a loss function, the parameter that minimizes expected loss is the median of the posterior distribution. 
+Example: Suppose we took a bet in which we guess the value of p, and the absolute value of the distance from the correct parameter lowers our payout. 
+Calculating expected loss for any given decision means using the posterior to average over our uncertainty in the true value. 
+
+```{r}
+# expected loss for p = 0.5 
+sum(posterior * abs(0.5 * p_grid))
+```
+
+The code above computes the weighted average loss, where each loss is weighted by its corresponding posterior probability. 
+
+We can repeat this calculation for every possible decision, using the function sapply: 
+```{r}
+# generate a list of loss values, one for each possible decision, corresponding to the values in p_grid. 
+loss <- sapply(p_grid, function(d) sum(posterior * abs(d - p_grid)))
+
+# find value that minimizes the loss 
+p_grid[which.min(loss)]
+
+# median of samples
+median(samples)
+```
+
+The minimized loss is actually the posterior median.
+
+In order to decide a point estimate, a single value summary of the posterior distribution, we need to pick a loss function. Different loss functions nominate different point estimates. The two most common examples are the absolute loss (above) or the quadratic loss (d - p)^2 which leads to the posterior mean (mean(samples)) as the point estimate. 
+
+## 3.3 | Sampling to simulate prediction 
+
+Another common job for samples from the posterior is to ease simulation of the model's implied observations. Generating implied observations from a model is useful for at least four distinct reasons. 
+
+  1. **Model Checking** : After a model is fit to real data, it is worth simulating implied observations, to check both whether the fit worked correctly and to investigate model behaviour. 
+  2. **Software Validation**: In order to be sure that our model fitting software is working, it helps to simulate observations under a known model and then attempt to recover the values of the parameters the data were simulated under 
+  3. **Research design**: If we can simulate observations from our hypothesis, then we can evaluate whether the research design can be effective. 
+  4. **Forecasting**: Estimates can be used to simulate new predictions, for new cases and future observations. These forecasts can be useful as applied prediction, but also for model criticism and revision. 
+  
+### 3.3.1 | Dummy Data 
+
+Our models also allow us to simulate the observations that the model implies. This is because likelihood works both ways: given a realized observation, the likelihood says how plausible the observation is. given only the parameters, the likelihood defines a distribution of possible observations that we can sample from, to simulate observation. In this way, bayesian models are always *generative*, capable of simulating predictions. Many non bayesian models are also generative, but many are not. 
+
+We call simulated data **Dummy Data**.
+
+In the globe tossing model, the dummy data arises from a binomial likelihood: 
+$Pr(w\mid n, p) = \frac{n!}{w!(n-w)!} p^w (1-p)^{n-w}$ 
+where w is an observed count of water, n is the number of tosses and p is the probability of landing on water. 
+
+```{r}
+# n = 2, generate possible observations 
+dbinom(0:2, size = 2, prob = 0.7)
+```
+
+This gives us a 9% chance of w = 0, a 42% chance of w = 1, and a 49% chance of w = 2. 
+
+Now we are going to simulate observations, using these likelihoods - by sampling from the distribution above. 
+
+```{r}
+# r stands for random. Generates one sample
+rbinom(1, size = 2, prob = 0.7)
+
+# generate 10 samples 
+rbinom(10, size = 2, prob = 0.7)
+
+# generate 100,000 dummy observations, to verify that each value (0, 1, or 2) appears in proportion to its likelihood 
+dummy_w <- rbinom(1e5, size = 2, prob = 0.7)
+table(dummy_w)/1e5
+
+# same as above, but with 9 tosses per sample 
+dummy_w <- rbinom(1e5, size = 9, prob = 0.7)
+table(dummy_w)/1e5
+hist(dummy_w/1e5)
+simplehist(dummy_w, xlab = "dummy water count")
+```
+
+### 3.3.2 | Model checking 
+
+Model checking means: 
+  1. ensuring the model fitting worked correctly 
+  2. evaluating the adequacy of a model for some purpose 
+
+since bayesian models are always generative, we can always simulate to examine the models empirical observations. 

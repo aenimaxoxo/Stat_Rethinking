@@ -1,0 +1,190 @@
+---
+title: "Ch2_Small_Worlds_and_Large_Worlds"
+author: "Michael Rose"
+date: "June 3, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Ch 2 | Small Worlds and Large Worlds 
+
+When there is no previous information about the conjectures, a common solution is to assign an equal number of ways that each conjecture could be correct, before seeing any data. This is sometimes known as the principle of indifference. 
+
+A conjecture proportion of blue marbles, p, is usually called a **parameter value**. Its just a way of indexing possible explanations of the data. 
+
+The relative number of ways that a value p can produce the data is usually called a **likelihood**. It is derived by enumerating all the possible data sequences that could have happened and then eliminating those sequences inconsistent with the data. 
+
+The prior plausibility of any specific p is usually called the **prior probability**
+
+The new, updated plausibility of any specific p is usually called the posterior probability. 
+
+```{r}
+ways <- c(0, 3, 8, 9, 0)
+ways / sum(ways)
+```
+
+## 2.2 | Building a Model 
+
+Designing a simple Bayesian model benefits from a design loop with three steps: 
+  1. Data story: Motivate the model by narrating how the data might arise
+  2. Update: Educate your model by feeding it the data 
+  3. Evaluate: All statistical models require supervision, leading possible to model revision 
+  
+## 2.3 | Components of the Model 
+
+###Likelihood
+
+The first and most influential component of a bayesian model is the Likelihood. The likelihood is a mathematical formula that specifies the plausibility of the data. 
+This means likelihood maps each conjecture - such as a proportion of water on the globe - onto the relative number of ways the data could occur, given that possibility. 
+  
+In the case of the globe, we begin by nominating all the possible events (W or L).Given N (9) samples, we need to say how likely that exact sample is out of the universe of potential samples of the same length. 
+We now add our assumption that the tosses are iid, and we can them use the binomial distribution to calculate the probability of observing w W's in n tosses with a probability p of w. 
+
+$Pr(w\mid n,p) = \frac{n!}{w!(n-w)!}p^w(1-p)^{n-w}$
+
+```{r}
+dbinom(6, size=9, prob=0.7)
+```
+**d** in dbinom stands for density. Functions named this way almost always have corresponding partners that begin with **r** for random samples and with **p** for cumulative probabilities. 
+
+### Parameters 
+One or all of the quantities that we wish to estimate from data are our parameters, e.g. w, n, p from the binomial model above 
+
+### Prior 
+For every parameter that we intend our bayesian machine to estimate, we must provide to the machine a prior. A bayesian machine must have an initial plausibility assignment for each possible value of the parameter. 
+When we have a previous estimate to provide, we can use that as the prior. 
+
+If we need a prior for n = 0, we can use a Uniform(0, 1) prior giving us $Pr=\frac{1}{1-0} = 1$ 
+Our flat uniform prior is rarely the best prior though. We generally want to use priors that nudge the machine to improve inference, and these are sometimes called **regularing** or **weakly informative** priors.
+They are so useful that non-Bayesial statistical procedures have adopted a mathematically equivalent approach, **penalized likelihood**. These priors are conservative, in htat they tend to guard against inferring 
+strong associations between variables. 
+
+### Posterior 
+The posterior distribution is the logical consequence of our choices or likelihood, parameters and priors for each parameter. The posterior distribution takes the form of the probability of the parameters, conditional
+on the data $Pr(p|n,w)$. 
+
+$Posterior = \frac{Likelihood * Prior}{Average Likelihood}$
+
+The average likelihood, Pr(w) is commonly called the evidence or the probability of the data. The probability Pr(w) is merely the average likelihood of the data, averaged over the prior. Its job is to standaridze the posterior,
+to ensure it sums(integrates) to one. 
+
+$Pr(w) = E(Pr(w \mid p)) = \int Pr(w \mid p) Pr(p) dp$
+
+$Pr(w\mid p) = \frac{Pr(w \mid p)Pr(p)}{Pr(w)}$
+
+## 2.4 | Making the model go 
+
+Since most conditioned models are not tractable, we will use numerical techniques to compute posterior distributions: 
+  1. Grid Approximation
+  2. Quadratic Approximation 
+  3. Markov Chain Monte Carlo 
+  
+### Grid Approximation 
+
+Generally our parameters are continuous, but sometimes intractable analytically. To combat this we can consider a finite sequence of points to solve. We do this by multiplying the prior probability of the point p' by the likelihood at p' 
+We then repeat this procedure until we have the essential shape of our posterior distribution. 
+
+This is useful pedagogically, but practically it doesn't scale well as the number of parameters increases. 
+
+For our globe tossing problem, we will use grid approximation with the following recipe: 
+  1. Define the grid. This means we decide how many points to use in estimating the posterior, and then we make a list of the parameter values on the grid 
+  2. Compute the value of the prior at each parameter value on the grid 
+  3. Compute the likelihood at each parameter value 
+  4. Compute the unstandardized posterior at each parameter value, by multiplying the prior by the likelihood
+  5. Standardize the posterior, by dividing by the sum of all values 
+  
+```{r}
+# define grid 
+p_grid <- seq(from = 0, to = 1, length.out = 20)
+
+# define prior 
+prior <- rep(1, 20)
+
+# compute the likelihood at each value in grid 
+likelihood <- dbinom(6, size = 9, prob = p_grid)
+likelihood
+
+# compute product of likelihood and prior 
+unstd.posterior <- likelihood * prior 
+
+# standardize the posterior, so it sums to 1 
+posterior <- unstd.posterior / sum(unstd.posterior)
+
+plot(posterior)
+```
+
+```{r}
+# display the posterior distribution
+plot(p_grid, posterior, type="b", xlab = "Probability of Water", ylab = "Posterior Probability")
+
+# try again with denser grid
+p_grid <- seq(from = 0, to = 1, length.out = 100)
+
+# some new priors
+prior <- ifelse(p_grid < 0.5, 0, 1)
+prior <- exp(-5 * abs(p_grid - 0.5))
+
+# likelihood, unstandardized posterior, posterior 
+likelihood <- dbinom(6, size = 9, prob = p_grid)
+unstd.posterior <- likelihood * prior 
+posterior <- unstd.posterior / sum(unstd.posterior)
+```
+  
+### Quadratic Appoximation 
+
+Eventually we will have to use methods that are not grid approximation, since its runtime is approximately O(n^2).
+
+A useful approach then, is **quadatic approximation**. Since the region near the peak of the posterior distribution is nearly Gaussian in shape, it can be usefully approximated by a gaussian distribution. This is good, because gaussians can be completely described by only two numbers: the mean and variance. 
+
+For many of the most common procedures in applied statistics, this technique works quite well. This is also a computationally cheap method, compared to grid approximation and MCMC. 
+
+This procedure consists of 2 steps: 
+  1. Find the posterior mode. This is generally achieved via an optimization algorithm. 
+  2. Once we find the peak, we estimate the curvature near the peak.This curvature is sufficient to calculate the quadratic approximation to the entire posterior distribution. 
+  
+We will use a tool in the rethinking package called MAP, Maximum A Posteriori, or mode of the posterior . This tool is a flexible model fitting tool that will allow us to specify a large number of different regression models. 
+
+To use map, we provide a formula, a list of data, and a list of start values for the parameters. 
+```{r}
+# to compute the quadratic approximation of the globe tossing data 
+
+library(rethinking)
+
+globe.qa <- map(
+  alist(
+    w ~ dbinom(9, p),    # binomial likelihood
+    p ~ dunif(0, 1)      # uniform prior
+  ),
+  data = list(w = 6)
+)
+
+# display summary of quadratic approximation
+precis(globe.qa)
+```
+
+For our output above, 
+MAP value p = 0.66 indicates a mean, p, of 0.66. The curvature is labeled Std Dev, standard deviation. 
+
+We can read this as: Assuming the posterior is Gaussian, it is maximized at 0.67. 
+
+```{r}
+# analytical calculation 
+w <- 6
+n <- 9
+
+curve(dbeta(x, w+1, n-w+1), from = 0, to = 1)
+
+# quadratic approximation 
+curve(dnorm(x, 0.67, 0.16), lty = 2, add = TRUE)
+```
+
+As we increase our data, we get a better approximation. This is why many classical statistical procedures are nervous about small samples, because they rely on approximations that are only perfectly safe with infinite data. 
+In this case, the quadratic approximation, either with a uniform prior or with lots of data, is equivalent to a **Maximum Likelihood Estimate** and its **Standard Error**.  
+
+### Markov Chain Monte Carlo 
+
+MCMC is a family of conditioning engines capable of handling complex models with lots of parameters. Instead of attempting to compute or approximate the posterior distribution directly, MCMC draws samples from the posterior. 
+We end up with a collection of parameter values, and the frequencies of these values correspond to the posterior plausibilities. We can then build a picture of the posterior from the histogram of these samples. 
