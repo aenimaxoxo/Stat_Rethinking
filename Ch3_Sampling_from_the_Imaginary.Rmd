@@ -213,3 +213,27 @@ Model checking means:
   2. evaluating the adequacy of a model for some purpose 
 
 since bayesian models are always generative, we can always simulate to examine the models empirical observations. 
+
+First, we must learn to combine sampling of simulated observations with sampling parameters from the posterior distribution. The entire posterior distribution is more useful than single points because it contains more information. 
+
+The implied predictions of a model are uncertain in 2 ways: 
+  1. Observation uncertainty. For any unique parameter p, there is a unique implied pattern of observations that the model expects. 
+  2. Uncertainty about parameter p. The posterior distribution over p embodies this uncertainty, and since there is uncertainty about p there is uncertainty about everything that depends on p. 
+  
+We'd like to *propogate* the parameter uncertainty - carry it forward - as we evaluate the predictions, by averaging over the posterior density for p while computing the predictions. 
+For each possible value of p, there is a distribution of outcomes - so we can average all of these predictiton distributions together, using the posterior probabilities of each value of p to get a **Posterior Predictive Distribution**.
+
+```{r}
+# to simulate predicted observations for a single value of p, say p = 0.6
+w <- rbinom(1e4, size = 9, prob = 0.6)
+simplehist(w)
+
+# all we need to propogate parameter uncertainty into these predictions is replace the value 0.6 with samples from the posterior 
+w <- rbinom(1e4, size = 9, prob = samples)
+simplehist(w)
+```
+
+# 3.4 | Summary 
+
+This chapter introduced basic procedures for manipulating posterior distributions. 
+We take samples from posterior distributions in order to approximate integrals. 
