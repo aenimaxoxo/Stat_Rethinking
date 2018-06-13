@@ -1,0 +1,852 @@
+---
+title: "Ch4_Linear_Models"
+author: "Michael Rose"
+date: "June 9, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+```
+
+# Linear Models 
+
+## 4.1 | Why normal distributions are normal 
+
+### 4.1.1 | Normal by Addition 
+
+```{r}
+# simulate the football field random walk to show gaussian outcome  
+pos <- replicate(1000, sum(runif(16, -1, 1)))
+
+# plot
+hist(pos)
+plot(density(pos))
+```
+
+Any process that adds together random values from the same distribution converges to a normal distribution. Depending on the distribution, convergence may be fast or slow. 
+
+### 4.1.2 | Normal by Multiplication 
+
+Suppose the growth rate of an organism is influenced by a dozen loci, each with several alleles that code for more growth. Suppose each of these loci interact with one another, such that each increase growth by a percentage. This means that their effects multiply, rather than add. 
+
+```{r}
+# sample a random growth rate | This code samples 12 random numbers between 1 and 1.1, each representing a proportional increase in growth. 1.0 means no growth. The product of all 12 is computed and returned as an output.
+prod(1 + runif(12, 0, 0.1))
+
+# see what distribution these random products will take 
+growth <- replicate(10000, prod(1 + runif(12, 0, 0.1)))
+dens(growth, norm.comp = TRUE)
+
+# the smaller the effect of each locus, the better the additive approximation will be. In this way, small effects that multiply together are approximately additive, so they stabilize to gaussian distributions. 
+big <- replicate(10000, prod(1 + runif(12, 0, 0.5)))
+small <- replicate(10000, prod(1 + runif(12, 0, 0.01)))
+
+dens(big, norm.comp = TRUE)
+dens(small, norm.comp = TRUE)
+```
+
+### 4.1.3 | Normal by log-multiplication 
+
+Large deviates that are multiplied together do not produce Gaussian distributions, by they do produce Gaussian distributions on the log scale. 
+
+```{r}
+log.big <- replicate(1000, log(prod(1 + runif(12, 0, 0.5))))
+dens(big, norm.comp = TRUE)
+dens(log.big, norm.comp = TRUE)
+```
+
+### 4.1.4 | Using Gaussian distributions 
+
+The rest of this chapter will use the Gaussian distribution as a skeleton for our hypotheses, building up models of measurements as aggregations of normal distributions. 
+
+Justifications for doing this: 
+  1. *Ontological Justification* : Many real world models are Gaussians since they are generally summations of fluctuating processes. 
+  2. *Epistemological Justification* : We can say that it represents a state of ignorance, since the Gaussian is made of micro distributions that we do not know. When all we know or are willing to say about a distribution is its mean and variance, then the Gaussian will arise as the most consistent with our assumptions. If all we are willing to assume is that a measure has finite variance, the Gaussian is the shape that can be realized in the largest number of ways and does not introduce any new assumptions.
+  
+```{r}
+# probability density is the rate of change in cumulative probability. This calculates Normal(0 | 0, 0.1)
+dnorm(0, 0, 0.1)
+```
+
+The gaussian distribution is routinely seen without $\sigma$ , but with $\tau$ instead. The parameter $\tau = \frac{1}{\sigma^2}$. This gives us the formula $p(y\mid \mu, \sigma) = \frac{1}{2\pi\sigma^2} \exp( - \frac{(y-\mu)^2}{2\sigma^2})$ which is the same as $p(y\mid\mu, \tau) = \sqrt{\frac{\tau}{2\pi}} \exp(-\frac{1}{2} \tau(y - \mu)^2)$. This form is common in Bayesian data analysis and bayesian model fitting software such as BUGS or JAGS. 
+
+# 4.2 | A language for describing models 
+
+1. First, we recognize a set of measurements that we hope to predict or understand, the *outcome* variable or variables. 
+2. For each of these outcome variables, we define a likelihood distribution that defines the plausibility of individual observations. In linear regression, this distribution is always Gaussian. 
+3. Then we recognize a set of other measurements that we hope to use to predict or understand the outcome. We call these *predictor variables*. 
+4. We relate the exact shape of the likelihood distribution - its precise location and variance and other aspects of its shape if it has them - to the predictor variables. In choosing a way to relate the predictors to the outcomes, we are forced to name and    define all the parameters in the model. 
+5. Finally, we choose priors for all of the parameters in the model. These priors define the initial information state of the model, before seeing the data. 
+
+We then summarize the model with something mathy like: 
+$\mathrm{outcome} \sim \mathrm{Normal}(\mu_i, \sigma)$
+$\mu_i = \beta \times \mathrm{predictor}_i$
+$\beta \sim \mathrm{Normal(0, 10)}$
+$\sigma \sim \mathrm{HalfCauchy(0, 1)}$
+
+Over time we will be able to see natural ways of changing assumptions of models to free us from the procrustean model type, like regression or multiple regression, or ANOVA or ANCOVA or such. These are all the same kind of model, and that fact becomes obvious once we know how to talk about models **as mappings of one set of variables through a probability distribution onto another set of variables.**
+
+### 4.2.1 | Re-describing the globe tossing model 
+
+We can describe that model as 
+$w \sim \mathrm{Binomial}$
+$p \sim \mathrm{Uniform(0, 1)}$
+
+To relate the model definition above to Baye's Theorem, we can write it as: 
+
+$\mathrm{Pr}(p \mid w, n) = \frac{\mathrm{Binomial}(w \mid n, p) \mathrm{Uniform}(p \mid 0, 1)}{\int \mathrm{Binomial}(w \mid n, p)\mathrm{Uniform}(p \mid 0, 1) dp}$
+
+```{r}
+# this is the same as the above 
+w <- 6; n <- 9
+p_grid <- seq(from = 0, to = 1, length.out = 100)
+posterior <- dbinom(w, n, p_grid) * dunif(p_grid, 0, 1)
+posterior <- posterior / sum(posterior)
+```
+
+
+# 4.3 | A Gaussian model of height 
+
+### 4.3.1 | The data 
+
+The data is a partial census data for the Dobe area !Kung San, compiled from interviews conducted by Nancy Howell in the late 1960s. The !Kung San people are the most famous foraging population of the 20th century, largely because of detailed quantitative studies by people like Nancy Howell. 
+
+```{r}
+library(rethinking)
+data("Howell1")
+
+d <- Howell1
+
+str(d)
+```
+
+The data contains 4 columns, <height, weight, age, male> where male is an indicator variable, weight is a continuous variable and the rest are integers. 
+
+```{r}
+# access height 
+d$height
+
+# filter our data to only contain adults. Gives us all the rows in which age >= 18 and every column 
+d2 <- d[d$age >= 18,]
+```
+
+### 4.3.2 | The model
+
+Our goal is to model these values using a Gaussian distribution.
+
+```{r}
+simplehist(d2$height)
+#simplehist(d$height)
+```
+
+We can say $h_i \sim \mathrm{Normal} (\mu, \sigma)$
+
+We can now add our priors: 
+
+$h_i \sim \mathrm{Normal}(\mu, \sigma)$ is our likelihood 
+$\mu \sim \mathrm{Normal}(178, 20)$ is our $\mu$ prior. 
+$\sigma \sim \mathrm{Uniform}(0, 50)$ is our $\sigma$ prior. 
+
+We are using 178 for our $\mu$ prior with a standard deviation of $\pm$ 40 cm. The author chose this number because he is 178 cm (5 ft 8, like the scribe!)
+
+```{r}
+# plot prior for mu
+curve(dnorm(x, 178, 20), from = 100, to = 250)
+
+# plot prior for sigma 
+curve(dunif(x, 0, 50), from = -10, to = 60)
+```
+
+```{r}
+# sample from the prior 
+sample_mu <- rnorm(1e4, 178, 20)
+sample_sigma <- runif(1e4, 0, 50)
+prior_h <- rnorm(1e4, sample_mu, sample_sigma)
+dens(prior_h)
+
+```
+
+### 4.3.3 | Grid approximation of the posterior distribution 
+
+```{r}
+# see name of section 
+mu.list <- seq(from = 153, to = 157, length.out = 200) # I changed these sections to see the contour plot better
+sigma.list <- seq(from = 7, to = 9, length.out = 200) # ^^^ 
+
+post <- expand.grid(mu = mu.list, sigma = sigma.list)
+post$LL <- sapply(1:nrow(post), function(i) sum(dnorm(
+  d2$height, 
+  mean = post$mu[i],
+  sd = post$sigma[i],
+  log = TRUE
+)))
+
+post$prod <- post$LL + dnorm(post$mu, 178, 20, TRUE) + 
+  dunif(post$sigma, 0, 50, TRUE)
+post$prob <- exp(post$prod - max(post$prod))
+
+# now we can inspect the posterior distribution 
+contour_xyz(post$mu, post$sigma, post$prob)
+
+# or, with a heatmap 
+image_xyz(post$mu, post$sigma, post$prob)
+```
+
+### 4.3.4 | Sampling from the Posterior 
+
+We will sample parameter values from the posterior again, but this time we sample combinations of the two parameters, $\mu$ and $\sigma$. 
+
+```{r}
+sample.rows <- sample(1:nrow(post), size = 1e4, replace = TRUE, prob = post$prob)
+sample.mu <- post$mu[sample.rows]
+sample.sigma <- post$sigma[sample.rows]
+
+# we now have 10000 samples with replacement from the posterior for the height data. cex = character expansion (size of points), pch = plot character, col.alpha = opacity, 0.1 transparency
+plot(sample.mu, sample.sigma, cex = 0.5, pch = 16, col = col.alpha(rangi2, 1.0))
+```
+
+Now that we have these samples, we can describe the distribution of confidence in each combination of $\mu$ and $\sigma$ by summarizing the samples. 
+
+```{r}
+# to characterize the shapes of the marginal posterior densities of mu and sigma 
+dens(sample.mu)
+dens(sample.sigma)
+
+# to summarize the widths of these densities with highest posterior density intervals 
+HPDI(sample.mu)
+HPDI(sample.sigma)
+```
+
+#### Overthinking: Sample size and the normality of sigma's posterior 
+
+For a Gaussian likelihood and a Gaussian mean, the posterior is always Gaussian, but sigma could cause problems. If we choose to pay attention to sigma (often people do not), we need to be careful of abusing quadratic approximation. 
+
+```{r}
+# analyze only 20 of the heights from the height data 
+d3 <- sample(d2$height, size = 20)
+
+# repeated code from last section 
+mu.list <- seq(from = 150, to = 170, length.out = 200)
+sigma.list <- seq(from = 4, to = 20, length.out = 200)
+
+post2 <- expand.grid(mu = mu.list, sigma = sigma.list)
+
+post2$LL <- sapply(1:nrow(post2), function(i)
+  sum(dnorm(d3, mean = post2$mu[i], sd = post2$sigma[i], log = TRUE)))
+
+post2$prod <- post2$LL + dnorm(post2$mu, 178, 20, TRUE) + dunif(post2$sigma, 0, 50, TRUE)
+
+post2$prob <- exp(post2$prod - max(post2$prod))
+
+sample2.rows <- sample(1:nrow(post2), size = 1e4, replace = TRUE, prob = post2$prob)
+sample2.mu <- post2$mu[sample2.rows]
+sample2.sigma <- post2$sigma[sample2.rows]
+
+plot(sample2.mu, sample2.sigma, cex = 0.5, col = col.alpha(rangi2, 1.0), xlab = "mu", ylab = "sigma", pch = 16)
+
+# we notice a larger tail floating on top of the points
+
+# inspecting the marginal posterior density 
+dens(sample2.sigma, norm.comp = TRUE)
+```
+
+### 4.3.5 | Fitting the model with map 
+
+We will now leave grid approximation beind and move on to the quadratic approximation. The quadratic approximation quickly makes inferences about the shape of the posterior. This gives us an image of the posteriors shape by finding the peak, which lies at the maximum a posteriori estimate (MAP). 
+
+```{r}
+# find the values of mu and sigma that maximize the posterior probability with map
+# place the R code equivalents of the model definition (hi normal, mu norm(178, 20), sigma uniform(0, 50)) 
+flist <- alist(
+  height ~ dnorm(mu, sigma),
+  mu ~ dnorm(178, 20), 
+  sigma ~ dunif(0, 50)
+)
+
+# fit the model to the data in the data frame d2
+m4.1 <- map(flist, data = d2)
+
+precis(m4.1)
+
+```
+
+#### Overthinking : Start values for map 
+
+Map estimates the posterior in a similar manner to gradient descent. So we can specify starting points if we want: 
+
+```{r}
+start <- list(
+  mu = mean(d2$height),
+  sigma = sd(d2$height)
+)
+```
+
+list evaluates code placed inside of it, alist does not. So if we wish to define a list of formulas, use alist. 
+
+---------------------------------------------------
+
+The priors we used before were weak, because they are nearly flat and there is a good amount of data. 
+
+```{r}
+# adding a more informative prior for mu 
+m4.2 <- map(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu ~ dnorm(178, 0.1), # standard deviation of 0.1  
+    sigma ~ dunif(0, 50)
+  ), 
+  data = d2
+)
+
+precis(m4.2)
+```
+
+The mean has barely moved from 178, but our sigma has changed quite a bit. This is because we gave our golem a strong prior, so it calculated sigma conditional on mu which lead to a larger sigma value to compensate. 
+
+#### Overthinking: How strong is a prior? 
+
+We can calculate how strong a prior is by talking about it int erms of which data will lead to the same posterior distribution, beginning with a flat prior. In the $\mu \sim \mathrm{Normal}(178, 0.1)$ prior, we can compute the implied amount of data easily, because there is a simple formula for the standard deviation of a Gaussian posterior for $\mu$: $\sigma_{post} = \frac{1}{\sqrt{n}}$, so $n = \frac{1}{\sigma^2_{post}}$. Therefore we get $n = \frac{1}{.01} = 100$ or having mu distributed as N(178, 0.1) is equivalent to having previously observed 100 heights with mean value 178. This is a pretty strong prior. In contrast, the former Normal(178, 20) prior implies n = 1/20^2 or 0.0025 of an observation, which is a weak prior. 
+
+-------------------------------
+
+### 4.3.6 | Sampling from a map fit 
+
+We get samples from a quadratic approximation to a posterior distribution. This is done by recognizing that a quadratic approximation to a posterior distribution with more than one parameter dimension, mu and sogma, is just a mutlidimensional Gaussian. 
+As a result, when R constructs the quadratic approximation, it calculates not only standard deviations for all parameters, but also the covariances among all pairs of parameters. 
+
+```{r}
+# see the matrix of variances and covariances 
+vcov(m4.1)
+```
+
+The above is a **Variance-Covariance Matrix**. It tells us how much each parameter relates to every other parameter in the posterior distribution. 
+A variance-covariance matrix can be factored into two elements: 
+  1. A vector of variances for the parameters 
+  2. A correlation matrix that tells us how changes in any parameter lead to correlated changes in the others. 
+  
+```{r}
+# decomposition of a var-cov matrix 
+
+# list of variances 
+diag(vcov(m4.1))
+
+# correlation matrix
+cov2cor(vcov(m4.1))
+```
+Now, to get samples from the multi dimensional posterior. Instead of sampling single values from a simple Gaussian, we sample vectors of values from a multi dimensional Gaussian distribution. 
+
+```{r}
+post <- extract.samples(m4.1, n = 1e4)
+
+# alternatively, we can use multivariate norm random sampling 
+library(MASS)
+post <- mvrnorm(n = 1e4, mu = coef(m4.1), Sigma = vcov(m4.1))
+
+head(post)
+```
+
+We get a dataframe with 10000 rows and two columns, one for each parameter. Each value is a sample from the posterior. 
+
+```{r}
+precis(post)
+plot(post)
+```
+
+#### Overthinking: Getting sigma right 
+
+Since the quadratic assumption for $\sigma$ can be problematic, a conventional way to improve the situation is to estimate log($\sigma$) instead. 
+This helps because, while the posterior distribution of $\sigma$ will often not be Gaussian, the distribution of the logarithm can be much closer to Gaussian. 
+
+```{r}
+# impose the quadratic approximation on the logarithm as opposed to the standard deviation itself 
+m4.1_logsigma <- map(
+  alist(
+    height ~ dnorm(mu, exp(log_sigma)), 
+    mu ~ dnorm(178, 20), 
+    log_sigma ~ dnorm(2, 10)
+  ), data = d2
+)
+```
+
+The exp inside the likelihood converts a continuous parameter, log_sigma, to be strictly positive since $\exp(x) > 0, \forall x \in \mathbb{R}$. 
+When we extract samples, it is log_sigma that has a Gaussian distribution. 
+
+```{r}
+# to get the distribution of sigma, we just need to use the same exp as in the model definition to get back on the natural scale 
+post <- extract.samples(m4.1_logsigma)
+sigma <- exp(post$log_sigma)
+```
+
+When we have a lot of data, this won't make any noticeable difference, but the use of exp to effectively constrain a parameter to be positive is a robust and useful one. It is also related to link functions, which will be very important when we arrive at generalized linear models. 
+-------------------------------
+
+# 4.4 | Adding a predictor 
+
+What we have so far is a Gaussian model of height in a population of adults. To get that feeling of regression, we are going to add a predictor variable to it to get linear regression. 
+
+```{r}
+# plot how kalahari height and weight covaries 
+plot(d2$height ~ d2$weight)
+
+```
+
+### 4.4.1 | The linear model strategy 
+
+The strategy is to make the parameter for the mean of a Gaussian distribution, $\mu$, into a linear function of the predictor variable and the other, new parameters that we invent. This is often called the **linear model**. 
+This instructs the golem to assume that the predictor variable has a perfectly constant and additive relationship to the mean of the outcome. Then the golem computes the posterior distributions of this constant relationship. 
+
+The golem will consider every possible combination of parameter values. With the linear model, some of the parameters stand for the strength of association between the mean of the outcome and the value of the predictor. 
+For each combination of values, the machine computes the posterior probability, which is a measure of relative plausibility, given the model and data. The posterior distribution ranks the infinite possible combinations of 
+parameter values by their logical plausibility, and, as a result, provides relative plausibilities of the different possible strengths of association, given the assumptions programmed into the model. 
+
+So we'd like to know how the values in the weight parameter can help us predict our posterior, h. To get weight into the model, we define the mean $\mu$ as a function of the values in h. This looks like: 
+
+$h_i \sim \mathrm{Normal}(\mu_i, \sigma)$                  # likelihood                         #  height ~ dnorm(mu, sigma)  
+$\mu_i = \alpha + \beta x_i$                               # linear model                       # mu <- a + b*weight
+$\alpha \sim \mathrm{Normal(178, 100)}$                    # $\alpha$ prior                     # a ~ dnorm(156, 100)
+$\beta \sim \mathrm{Normal}(0, 10)$                        # $\beta$ prior                      # b ~ dnorm(0, 10)
+$\sigma \sim \mathrm{Uniform}(0, 50)$                      # $\sigma$ prior                     # sigma ~ dunif(0, 50)
+
+```{r}
+# build the map model fit 
+m4.3 <- map(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b*weight, 
+    a ~ dnorm(156, 100), 
+    b ~ dnorm(0, 10), 
+    sigma ~ dunif(0, 50)
+  ), data = d2
+)
+```
+
+#### Overthinking: Embedding linear models 
+
+It may help to see another way to fit the same model, but without a seperate line for the linear model. We can just merge the linear model into the likelihood definition, like so: 
+
+```{r}
+m4.3 <- map(
+  alist(
+    height ~ dnorm(a + b* weight, sigma),
+    a ~ dnorm(178, 100), 
+    b ~ dnorm(0, 10),
+    sigma ~ dunif(0, 50)
+  ), data = d2
+) 
+```
+
+-----------------------
+
+### 4.4.3 | Interpreting the model fit 
+
+There are two broad categories of processing: 
+  1. reading tables 
+  2. plotting 
+
+Plotting will allow us to inquire about several things: 
+  1. Whether or not the model fitting procedure worked correctly
+  2. The *absolute* magnitude, rather than the *relative* magnitude of a relationship between outcome and predictor 
+  3. The uncertainty surrounding an average relationship 
+  4. The uncertainty surrounding the implied predictions of the model, as these are distinct from mere parameter uncertainty
+  
+#### 4.4.3.1 | Table of estimates 
+
+Models in general can not be understood by tables of estimates. We can inspect them though: 
+```{r}
+precis(m4.3)
+```
+
+From the table above, looking at $\beta$ : A person 1 kg heavier is expected to be 0.9 cm taller. 89% of the time the person is between 0.84 and 0.97 cm taller.
+For our $\alpha$ value, the table indicates a person of weight 0 should be 113.91 cm tall. This is obviously false, but it is simply the intercept. 
+Our $\sigma$ value tells us the width of the distribution of heights around the mean. So 95% of plausible heights lie within $2\sigma$ of the mean height, or 10.14 cm. 
+
+```{r}
+# since we also require the variance-covariance matrix for describing the quadratic posterior
+precis(m4.3, corr = TRUE)
+
+# just the correlation 
+cov2cor(vcov(m4.3))
+```
+
+Our $\alpha$ and $\beta$ estimates are almost completely negatively correlated, so they essentially contain the same information. This isn't a problem here, but in more complex models this can be a problem. 
+
+So we should use some tricks to fix it. 
+
+**Centering** - is the procedure of subtracting the mean of a variable from each value. 
+```{r}
+# create a centered version of the weight table 
+d2$weight.c <- d2$weight - mean(d2$weight)
+
+# confirm the average value of weight.c is essentially 0
+mean(d2$weight.c)
+
+# refit the model (replace weight with weight.c)
+m4.4 <- map(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b*weight.c,
+    a ~ dnorm(178, 100),
+    b ~ dnorm(0, 10), 
+    sigma ~ dunif(0, 50)
+  ), data = d2
+)
+
+# output
+precis(m4.4, corr = TRUE)
+
+```
+
+The estimates for $\beta$ and $\sigma$ are unchanged, but the value for $\alpha$ is now the same as the average height value in the raw data. Also, more importantly, the correlations amongst the parameters are now all 0. 
+
+```{r}
+# check mean of raw data 
+mean(d2$height)
+```
+
+#### 4.4.3.2 | Plotting posterior inference against the data 
+
+We will start with superimposing just the MAP values over the height and weight data. Then we will slowly add more information to the prediction plots until we've used the entire posterior distribution.
+```{r}
+# superimpose the MAP values for mean height over the actual data 
+plot(height ~ weight, data = d2)
+abline(a = coef(m4.3)["a"], b = coef(m4.3)["b"])
+```
+
+#### 4.4.3.3 | Adding uncertainty around the mean 
+
+We can sample a bunch of lines from the posterior distribution, and then display them on the plot to visualize uncertainty. 
+
+```{r}
+# extract samples from the model 
+post <- extract.samples(m4.3)
+
+# inspect first 5 rows 
+post[1:5,]
+
+# extract the first 10 cases and then re-estimate the model 
+N <- 352
+dN <- d2[1:N,]
+mN <- map(
+  alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b*weight, 
+    a ~ dnorm(178, 100),
+    b ~ dnorm(0, 10),
+    sigma ~ dunif(0, 50)
+  ), data = dN
+)
+
+# extract 20 samples from the posterior  
+post <- extract.samples(mN, n = 20)
+
+# display raw data and sample size 
+plot(dN$weight, dN$height, xlim = range(d2$weight), ylim = range(d2$height), col = rangi2, xlab = "weight", ylab = "height")
+mtext(concat("N = ", N))
+
+# plot the lines, with transparency
+for (i in 1:20)
+  abline(a = post$a[i], b = post$b[i], col = col.alpha("black", 0.3))
+
+```
+
+```{r}
+# make a list of 10,000 values of mu for an individual who weighs 50 kg by sampling from posterior 
+mu_at_50 <- post$a + post$b * 50
+
+# glimpse values
+mu_at_50 %>% head()
+
+# make density plot 
+dens(mu_at_50, col = rangi2, lwd = 2, xlab = "mu | weight = 50")
+
+```
+
+Since the components of $\mu$ have distributions, so too does $\mu$. Since $\alpha$ and $\beta$ are gaussian, so too is $\mu$. 
+
+Since the posterior for $\mu$ is a distribution, we can also find intervals for it.
+
+```{r}
+# find 89% highest posterior density interval of mu at 50 kg 
+HPDI(mu_at_50, prob = 0.89)
+```
+
+This means that the central 89% of ways for the model to produce the data place the average height between 159 and 160 cm, assuming the weight is 50 kg. 
+
+Now we need to repeat the above calculations for every weight value, and we can do this with the link function. 
+link takes our map model fit, samples from the posterior distribution, and then computes mu for each case in the data and sample from the posterior distribution. 
+
+```{r}
+mu <- link(m4.3)
+str(mu)
+```
+
+What can we do with the link? It provides a posterior distribution of $\mu$ for each case we feed it. So above we have a distribution for $\mu$ for each individual in the training data. 
+We want a distribution for mu for each unique weight value on the horizontal axis.
+
+```{r}
+# define sequence of weights to compute predictions for mu. These values will be on the horizontal axis 
+weight.seq <- seq(from = 25, to = 70, by = 1)
+
+# use link to compute mu for each sample from posterior and for each weight in weight.seq 
+mu <- link(m4.3, data = data.frame(weight = weight.seq))
+str(mu)
+
+# visualize. Use type = "n" to hide raw data 
+plot(height ~ weight, d2, type = "n")
+
+for (i in 1:100)
+  points(weight.seq, mu[i,], pch = 16, col = col.alpha(rangi2, 0.1))
+
+# summarize the distribution of mu 
+
+# compute the mean of each column of the matrix mu
+mu.mean <- apply(mu, 2, mean)
+# compute the 89% upper and lower bounds for each column of the matrix mu
+mu.HPDI <- apply(mu, 2, HPDI, prob = 0.89)
+
+mu.mean
+mu.HPDI
+```
+
+```{r}
+# plot raw data, fading out points to make line and interval more visible. 
+# plot raw data
+# fading out points to make line and interval more visible
+plot( height ~ weight , data=d2 , col=col.alpha(rangi2,0.5) )
+# plot the MAP line, aka the mean mu for each weight
+lines( weight.seq, mu.mean, type = "b")
+# plot a shaded region for 89% HPDI
+shade( mu.HPDI , weight.seq )
+```
+
+To summarize, here is the recipe for generating predictions and intervals from the posterior of a fit model: 
+  1. Use link to generate distributions of posterior values for $\mu$. The default behaviour of link is to use the original data, so we have to pass it a list of new horizontal axis values we want to plot posterior predictions across
+  2. Use summary functions like mean or HPDI or PI to find averages and low and upper bounds of $\mu$ for each value of the predictor variable
+  3. Use plotting functions like lines and shade to draw the lines and intervals - or we might plot the distributions of the predictions, or do further numerical calculations with them 
+  
+#### Overthinking: How link works 
+
+Like is just using the formula we provided when we fit the model to compute the value of the linear model. It does this for each sample from the posterior distribution, for each case in the data. We could do this manually as such: 
+
+```{r}
+post <- extract.samples(m4.3)
+mu.link <- function(weight) post$a + post$b * weight 
+weight.seq <- seq(from = 25, to = 70, by = 1)
+mu <- sapply(weight.seq, mu.link)
+mu.mean <- apply(mu, 2, mean)
+mu.HPDI <- apply(mu, 2, HPDI, prob = 0.89)
+
+plot( height ~ weight , data=d2 , col=col.alpha(rangi2,0.5) )
+# plot the MAP line, aka the mean mu for each weight
+lines( weight.seq, mu.mean, type = "b")
+# plot a shaded region for 89% HPDI
+shade( mu.HPDI , weight.seq )
+
+```
+
+#### 4.4.3.5 | Prediction Intervals 
+
+Now we will go through generating an 89% prediction interval for actual heights, not just the average height $\mu$. 
+
+The model here is: 
+
+$h_i \sim \mathrm{Normal}(\mu_i, \sigma)$
+$\mu_i = \alpha + \beta x_i$
+
+```{r}
+# simulate heights from h_i 
+# sim.height <- sim(m4.3, data = list(weight = weight.seq))
+# str(sim.height)
+
+# if we wanted to smooth out the intervals we could take more samples 
+sim.height <- sim(m4.3, data = list(weight = weight.seq), n = 1e4)
+height.PI <- apply(sim.height, 2, PI, prob = 0.89)
+
+# summarize these simulated heights with apply. height.PI will contain the 89% posterior prediction interval of observable heights, across the values of weight in weight.seq
+# height.PI <- apply(sim.height, 2, PI, prob = 0.89)
+
+# plot the map line, the shaded region of 89% plausible mu, and the boundaries of the simulated heights the model expects 
+
+# plot raw data 
+plot(height ~ weight, d2, col = col.alpha(rangi2, 0.5))
+
+# draw MAP line
+lines(weight.seq, mu.mean)
+
+# draw HPDI region for line 
+shade(mu.HPDI, weight.seq)
+
+# draw PI region for simulated heights 
+shade(height.PI, weight.seq)
+
+```
+
+The wide shaded region is the area within which the model expects to find 89% of the heights. The smaller region inside is the area in which the model expects to find 89% of the means. 
+
+#### Overthinking | Rolling your own sim 
+
+For every distribution like dnorm, there is a companion simulation function (like rnorm). We want R to simulate a height for each set of samples, and to do this for each value of weight. 
+
+```{r}
+# simulate a height for each set of samples, and do do this for each value of weight 
+post <- extract.samples(m4.3)
+weight.seq <- 25:70 
+sim.height <- sapply(weight.seq, function(weight)
+  rnorm(
+    n = nrow(post),
+    mean = post$a + post$b * weight, 
+    sd = post$sigma
+    )
+  )
+height.PI <- apply(sim.height, 2, PI, prob = 0.89)
+
+# plot raw data 
+plot(height ~ weight, d2, col = col.alpha(rangi2, 0.5))
+
+# draw MAP line
+lines(weight.seq, mu.mean)
+
+# draw HPDI region for line 
+shade(mu.HPDI, weight.seq)
+
+# draw PI region for simulated heights 
+shade(height.PI, weight.seq)
+```
+
+# 4.5 | Polynomial Regression 
+
+Now we will see how to use linear models to build regressions with more than one predictor variable. 
+
+```{r}
+# use full !Kung data 
+data(Howell1)
+d <- Howell1
+str(d)
+```
+
+```{r}
+# plot height v weight 
+plot(height ~ weight, data = d)
+ggplot(d) + geom_point(aes(y = height, x = weight))
+```
+
+Here is the common polynomial regression, a parabolic model of the mean: 
+
+$\mu_i = \alpha + \beta_1 x_i + \beta_2 x_i^2$ 
+
+Fitting these models is easy, but interpretation can be hard. 
+We will begin with fitting the model or height on weight. 
+
+The first thing to do is **standardize** the predictor variable. This means we must center the variable and then divide it by its standard deviation. 
+Standardizing leaves the mean at zero and also rescales the range of the data. This is helpful because: 
+  1. Interpretation may be easier. When standardized, a change of one unit is equivalent to a change of one standard deviation. Also, once we start making regressions with more than one kind of predictor variable, standardizing them makes it easier to           compare the relative influence on the outcome, using only estimates. 
+  2. Advantages for fitting the model to the data. When we don't standardize, sometimes we have big numbers for our coefficients, which become much bigger for squared (or even higher order) coefficients.
+  
+```{r}
+# standardize weight so that it has mean 0 and sd of 1 
+d$weight.s <- (d$weight - mean(d$weight)) / sd(d$weight)
+
+# plot to show no information has been lost
+library(ggplot2)
+ggplot(d) + geom_point(aes(x = weight, y = height))
+```
+
+To fit the parabolic model, we just modify the definition of $\mu_i$. Here is the model: 
+
+$h_i \sim \mathrm{Normal}(\mu_i, \sigma)$
+$\mu_i = \alpha + \beta_1 x_i + \beta_2 x_i^2$ 
+$\alpha \sim \mathrm{Normal}(178, 100)$
+$\beta_1 \sim \mathrm{Normal}(0, 10)$
+$\beta_2 \sim \mathrm{Normal}(0, 10)$
+$\sigma \sim \mathrm{Uniform}(0, 50)$
+
+```{r}
+# make model 
+d$weight.s2 <- d$weight.s^2 
+m4.5 <- map(
+  alist(
+    height ~ dnorm(mu, sigma), 
+    mu <- a + b1 * weight.s + b2 * weight.s2, 
+    a ~ dnorm(178, 100), 
+    b1 ~ dnorm(0, 10),
+    b2 ~ dnorm(0, 10),
+    sigma ~ dunif(0, 50)
+  ), data = d
+)
+
+# generate table 
+precis(m4.5)
+```
+
+```{r}
+# plot model fits 
+# generate weight sequences 
+weight.seq <- seq(from = -2.2, to = 2, length.out = 30)
+# create list with values for weight sequences and weight sequences squared
+pred_dat <- list(weight.s = weight.seq, weight.s2 = weight.seq^2)
+# use link function (apply our model) to each weight sequence
+mu <- link(m4.5, data = pred_dat)
+# make list of means for each weight sequence
+mu.mean <- apply(mu, 2, mean)
+# make list of probability intervals for each weight sequence
+mu.PI <- apply(mu, 2, PI, prob = 0.89)
+# simulate heights from generated data at weight seq intervals 
+sim.height <- sim(m4.5, data = pred_dat)
+# create probability interval for simulated heights 
+height.PI <- apply(sim.height, 2, PI, prob = 0.89)
+
+# plot 
+plot(height ~ weight.s, d, col = col.alpha(rangi2, 0.5))
+lines(weight.seq, mu.mean)
+shade(mu.PI, weight.seq)
+shade(height.PI, weight.seq)
+
+```
+
+For a cubic regression: 
+
+$h_i \sim \mathrm{Normal}(\mu_i, \sigma)$
+$\mu_i = \alpha + \beta_1 x_i + \beta_2 x_i^2 + \beta_3 x_i ^3$
+
+```{r}
+d$weight.s3 <- d$weight.s^3 
+m4.6 <- map(
+  alist(
+    height ~ dnorm(mu, sigma), 
+    mu <- a + b1*weight.s + b2*weight.s2 + b3*weight.s3, 
+    a ~ dnorm(178, 100),
+    b1 ~ dnorm(0, 10),
+    b2 ~ dnorm(0, 10),
+    b3 ~ dnorm(0, 10),
+    sigma ~ dunif(0, 50)
+  ), data = d
+)
+
+weight.seq <- seq(from = -2.2, to = 2, length.out = 30)
+pred_dat <- list(weight.s = weight.seq, weight.s2 = weight.seq^2, weight.s3 = weight.seq^3)
+mu <- link(m4.6, data = pred_dat)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI, prob = 0.89)
+sim.height <- sim(m4.6, data = pred_dat)
+height.PI <- apply(sim.height, 2, PI, prob = 0.89)
+
+plot(height ~ weight.s, d, col = col.alpha(rangi2, 0.5))
+lines(weight.seq, mu.mean)
+shade(mu.PI, weight.seq)
+shade(height.PI, weight.seq)
+```
+
+#### Overthinking: Converting back to natural scale
+
+When we standardize, our horizontal axis variable, weight.s consists of z scores. We may want to convert this back to natural units. This can be done as follows: 
+```{r}
+# remove the x axis
+plot(height ~ weight.s, d, col = col.alpha(rangi2, 0.5), xaxt = "n")
+# construct the x axis
+at <- c(-2, -1, 0, 1, 2)
+labels <- at * sd(d$weight) + mean(d$weight)
+axis(side = 1, at = at, labels = round(labels, 1))
+```
+
