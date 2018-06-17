@@ -321,12 +321,369 @@ Because x_real influences both y and x_spur, we can think of x+spur as another o
 
 # 5.2 | Masked Relationship 
 
-Another reason to use more than one predictor variable is to measure the direct influences of multiple factors on an outcome, when none of those influences is apparent from bivariate relationships. 
+Another reason to use more than one predictor variable is to measure the direct influences of multiple factors on an outcome, when none of those influences is apparent from bivariate relationships. This type of problem arises when we have two predictors that are correlated with one another - but one is positively correlated and the other is negatively correlated. 
 
 ```{r}
 library(rethinking)
 data(milk)
 d <- milk
 str(d)
+```
+
+The analysis for this section is to find out to what extent the energy content of milk, measured in kcol, is related to the percent of the brain mass of the neocortex. 
+
+The first model to consider is the simple bivariate regression between kcal and neocortex percent: 
+
+```{r}
+# check for missing data 
+d$neocortex.perc
+
+# drop NA values 
+dcc <- d[complete.cases(d),]
+
+# fit model to cleaned data
+m5.5 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a + bn * neocortex.perc, 
+    a ~ dnorm(0, 100), 
+    bn ~ dnorm(0, 1), 
+    sigma ~ dunif(0, 1)
+  ), data = dcc
+)
+
+# look at quadratic approximate posterior. add digits = 3 because posterior mean for bn is very small
+precis(m5.5, digits = 3)
+plot(precis(m5.5))
+
+# plot predicted mean and 89% interval for the mean 
+np.seq <- 0:100 
+pred.data <- data.frame(neocortex.perc = np.seq)
+
+mu <- link(m5.5, data = pred.data, n = 1e4)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+plot(kcal.per.g ~ neocortex.perc, data = dcc, col = rangi2)
+lines(np.seq, mu.mean)
+lines(np.seq, mu.PI[1,], lty = 2)
+lines(np.seq, mu.PI[2,], lty = 2)
+
+```
+
+Now we will consider another predictor variable, adult female body mass. We will use the log of the mass, since it is often tyue that scaling measurements like body mass are related by magnitudes to other variables. Taking the log of the mass translates this measure into magnitudes. 
+
+```{r}
+# transform mass 
+dcc$log.mass <- log(dcc$mass)
+
+# fit model 
+m5.6 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a + bm*log.mass,
+    a ~ dnorm(0, 100), 
+    bm ~ dnorm(0, 1),
+    sigma ~ dunif(0, 1)
+  ), data = dcc
+)
+
+precis(m5.6)
+plot(precis(m5.6))
+
+
+```
+
+Now we will add both predictor variables at the same time, so our model is: 
+
+$k_i \sim \mathrm{Normal}(\mu_i, \sigma)$
+$\mu_i = \alpha + \beta_n n_i + \beta_m \log(m_i)$
+$\alpha \sim \mathrm{Normal}(0, 100)$
+$\beta_n \sim \mathrm{Normal}(0, 1)$
+$\beta_m \sim \mathrm{Normal}(0, 1)$
+$\sigma \sim \mathrm{Uniform}(0, 10)$
+
+```{r}
+m5.7 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a + bn * neocortex.perc + bm * log.mass, 
+    a ~ dnorm(0, 100),
+    bn ~ dnorm(0, 1), 
+    bm ~ dnorm(0, 1),
+    sigma ~ dunif(0, 1)
+  ), data = dcc
+)
+
+precis(m5.7)
+plot(precis(m5.7))
+```
+
+```{r}
+# plot the intervals for the predicted mean kcals with a counterfactual plot 
+mean.log.mass <- mean(log(dcc$mass))
+
+np.seq <- 0:100 
+pred.data <- data.frame(
+  neocortex.perc <- np.seq, 
+  log.mass = mean.log.mass
+)
+
+mu <- link(m5.7, data = pred.data, n = 1e4)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+plot(kcal.per.g ~ neocortex.perc, data = dcc, type = "n")
+lines(np.seq, mu.mean)
+lines(np.seq, mu.PI[1,], lty = 2)
+lines(np.seq, mu.PI[2,], lty = 2)
+```
+
+```{r}
+# bottom right plot fig 5.7 
+lm.seq <- seq(from = -2, to = 4, length.out = 7)
+mean.neocortex.perc <- mean(dcc$neocortex.perc)
+
+pred2.data <- data.frame(
+  log.mass <- lm.seq, 
+  neocortex.perc = mean.neocortex.perc
+)
+
+mu <- link(m5.7, data = pred2.data, n = 1e4)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+plot(kcal.per.g ~ log.mass, data = dcc, type = "n")
+lines(lm.seq, mu.mean)
+lines(lm.seq, mu.PI[1,], lty = 2)
+lines(lm.seq, mu.PI[2,], lty = 2)
+
+```
+
+#### Overthinking | Simulating a masking relationship 
+
+We will be simulating data in which two meaningful predictors act to mask one another. 
+
+Suppose we have a single outcome y with two predictors, x_pos and x_neg. x_pos is positively correlated with y, and x_neg negatively.These predictors are also positively correlated with one another. 
+```{r}
+N <- 100 # number of cases 
+rho <- 0.7 # correlation between x_pos and x_neg
+x_pos <- rnorm(N) # x pos as Gaussian
+x_neg <- rnorm(N, rho * x_pos, sqrt(1 - rho^2)) # xneg correlated with xpos
+y <- rnorm(N, x_pos - x_neg) # y equally associated with x_pos, x_neg
+d <- data.frame(y, x_pos, x_neg)
+
+pairs(d)
+```
+
+# 5.3 | When Adding Variables Hurts 
+
+In this section we will be going over things like multicollinearity, post treatment bias (which means statistically controlling for consequences of a causal factor) and overfitting.
+
+**Multicollinearity** means very strong correlation between two or more predictor variables. 
+
+## 5.3.1 | Multicollinear legs 
+
+This simulation example is predicting an individual's height using the length of his or her legs as predictor variables. 
+
+```{r}
+# simulate the height and leg lengths of 100 individuals 
+N <- 100                                                 # number of individuals 
+height <- rnorm(N, 10, 2)                                # sim total height of each
+leg_prop <- runif(N, 0.4, 0.5)                           # leg as proportion of height
+leg_left <- leg_prop * height + rnorm(N, 0, 0.02)        # sim left leg as proportion + error
+leg_right <- leg_prop * height + rnorm(N, 0, 0.02)       # sim right leg as proportion + error
+d <- data.frame(height, leg_left, leg_right)
+
+```
+
+```{r}
+# predict height with leg_left and leg_right 
+m5.8 <- map(
+  alist(
+    height ~ dnorm(mu, sigma), 
+    mu <- a + bl*leg_left + br*leg_right, 
+    a ~ dnorm(10, 100), 
+    bl ~ dnorm(2, 10), 
+    br ~ dnorm(2, 10), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+precis(m5.8)
+plot(precis(m5.8))
+
+```
+
+Our model is weird, but fit correctly. Our model answers the following question: 
+*What is the value of knowing each predictor, after already knowing all the other predictors?* or in this case: 
+*What is the value of knowing each leg's length, after already knowing the others length?*
+
+```{r}
+# look at the bivariate posterior distribution for bl and br 
+post <- extract.samples(m5.8)
+plot(bl ~ br, post, col = col.alpha(rangi2, 0.1), pch = 16)
+```
+
+What has happened here is the following: Since both leg variables contain almost exactly the same information, if we insist on including both in a model, there will be a practically infinite number of combinations of bl and br that produce the same predictions. Therefore, we can't really pull the leg variables apart, because they never seperately influence mu. Therefore only their sum influences mu. 
+
+```{r}
+# compute the posterior distribution of the sum of legs and plot it 
+sum_blbr <- post$bl + post$br
+dens(sum_blbr, col = rangi2, lwd = 2, xlab = "sum of bl and br")
+```
+
+The posterior mean is a little over 2 and the standard deviation is smaller than it is for either component of the sum, bl or br. On average, an individual's legs are 45% of his or her height. So we should expect a (b1 + b2) coefficient that measures the association of a leg with height to end up around the average height (10) divided by 45% of the average height (4.5), to get 10/4.5 which is approx 2.2. 
+
+```{r}
+# If we fit a regression with only one of the leg length variables, we get approximately the same posterior mean
+m5.9 <- map(
+  alist(
+    height ~ dnorm(mu, sigma), 
+    mu <- a + bl*leg_left, 
+    a ~ dnorm(10, 100), 
+    bl ~ dnorm(2, 10), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+precis(m5.9)
+plot(precis(m5.9))
+
+coef(m5.9)
+```
+
+Our bl coef of 2 is close enough to the mean value of sum_blbr. 
+*When two predictor variables are very strongly correlated, including both in a model may lead to confusion*
+
+## 5.3.2 | Multicollinear milk 
+
+We will return to the primate milk data for this section. We are addressing the problem that arises in real datasets in which we may not anticipate a clash between highly correlated predictors, and then mistakenly read the posterior distribution to day that neither predictor is important. 
+
+```{r}
+d <- milk
+
+# kcal.per.g regressed on perc.fat 
+m5.10 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma),
+    mu <- a + bf * perc.fat, 
+    a ~ dnorm(0.6, 10), 
+    bf ~ dnorm(0, 1),
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+# kcal.per.g regressed on perc.lactose
+m5.11 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a + bl * perc.lactose, 
+    a ~ dnorm(0.6, 10), 
+    bl ~ dnorm(0, 1), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+plot(precis(m5.10, digits = 3))
+plot(precis(m5.11, digits = 3))
+precis(m5.10)
+precis(m5.11)
+```
+The posterior mean for bf (percent fat with milk energy) is 0.01 with 89% interval 0.01 - 0.01. 
+The posterior mean for bl (percent lactose with milk energy) is -0.01. 
+
+These two predictors are mirror images of one another. 
+
+```{r}
+# try to place both predictor variables in the same regression model 
+m5.12 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a + bf * perc.fat + bl * perc.lactose, 
+    a ~ dnorm(0.6, 10), 
+    bf ~ dnorm(0, 1), 
+    bl ~ dnorm(0, 1), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+precis(m5.12, digits = 3)
+```
+
+The fat and lactose variables contain pretty much the same information. As a result, they form a single axis of variation
+
+```{r}
+pairs( ~ kcal.per.g + perc.fat + perc.lactose, data = d, col = rangi2)
+```
+
+We can see from the pairs plot above that there is not much variance between perc fat and perc lactose. They are negatively correlated with each other in such a way that they are essentially redundant. Either can help in predicting kcals, but neither helps much once we already know the other. 
+
+```{r}
+# correlation
+cor(d$perc.fat, d$perc.lactose)
+```
+
+The problem of multicollinearity is a member of a family of problems known as **non-identifiability**. When a parameter is non-identifiable, it means that the structure of the data and model do not make it possible to estimate the parameter's value.
+
+#### Overthinking | Simulating collinearity 
+
+This is the code that makes figure 5.10
+
+```{r}
+d <- milk
+sim.coll <- function(r = 0.9){
+  d$x <- rnorm(nrow(d), mean = r* d$perc.fat, sd = sqrt((1 - r^2) * var(d$perc.fat)))
+  m <- lm(kcal.per.g ~ perc.fat + x, data = d)
+  sqrt(diag(vcov(m)))[2] # stddev of parameter 
+}
+
+rep.sim.coll <- function(r = 0.9, n = 100){
+  stddev <- replicate(n, sim.coll(r))
+  mean(stddev)
+}
+
+r.seq <- seq(from = 0, to = 0.99, by = 0.01)
+stddev <- sapply(r.seq, function(z) rep.sim.coll(r = z, n = 100))
+plot(stddev ~ r.seq, type = "l", col = rangi2, lwd = 2, xlab = "correlation")
+
+```
+
+So for each correlation value in r.seq, the code generates 100 regressions and returns the average standard deviation from them. 
+
+## 5.3.3 | Post-Treatment Bias 
+
+**Omitted Variable Bias** is the type of mistake in which we worry about mistaken inferences that arise from omitting predictor variables. 
+**Post Treatment Bias** is worrying aboyt mistaken inferences arising from including variables that are consequences of other variables. 
+
+```{r}
+# see what goes wrong when we include a post-treatment variable 
+
+# number of plants
+N <- 100
+
+# simulate initial heights 
+h0 <- rnorm(N, 10, 2)
+
+# assign treatments and simulate fungus and growth 
+treatment <- rep(0:1, each = N/2)
+fungus <- rbinom(N, size = 1, prob = 0.5 - treatment * 0.4)
+h1 <- h0 + rnorm(N, 5 - 3 * fungus)
+
+# compose a clean data frame 
+d <- data.frame(h0 = h0, h1 = h1, treatment = treatment, fungus = fungus)
+
+# fit a model that includes all of the available variables 
+m5.13 <- map(
+  alist(
+    h1 ~ dnorm(mu, sigma), 
+    mu <- a + bh*h0 + bt*treatment + bf*fungus, 
+    a ~ dnorm(0, 100), 
+    c(bh, bt, bf) ~ dnorm(0, 10), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+precis(m5.13)
+
 ```
 
