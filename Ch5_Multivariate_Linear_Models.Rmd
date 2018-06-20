@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
 ```
 
 Reasons often given for multivariate models include: 
@@ -653,7 +654,7 @@ So for each correlation value in r.seq, the code generates 100 regressions and r
 ## 5.3.3 | Post-Treatment Bias 
 
 **Omitted Variable Bias** is the type of mistake in which we worry about mistaken inferences that arise from omitting predictor variables. 
-**Post Treatment Bias** is worrying aboyt mistaken inferences arising from including variables that are consequences of other variables. 
+**Post Treatment Bias** is worrying about mistaken inferences arising from including variables that are consequences of other variables. 
 
 ```{r}
 # see what goes wrong when we include a post-treatment variable 
@@ -685,5 +686,237 @@ m5.13 <- map(
 
 precis(m5.13)
 
+plot(precis(m5.13))
 ```
+
+From the plot above we see the following: 
+  - Our treatment effect is slightly negative 
+  - our fungus effect is quite strong in the negative direction 
+  - our h0 effect is strong in the positive direction
+  
+Since we know that treatment matters (we simulated it that way), we can see that something is off. The problem is that fungus is a consequence of treatment, or a *post treatment variable*. When we control for fungus, the model is implicitly answering the question *Once we already know whether or not a plant developed fugus, does soil treatment matter?* The answer is no because soil treatment has its effects on growth through reducing fungus. 
+
+To properly measure the impact of treatment on growth, we should omit the post treatment variable fungus 
+
+```{r}
+m5.14 <- map(
+  alist(
+    h1 ~ dnorm(mu, sigma), 
+    mu <- a + bh*h0 + bt*treatment,
+    a ~ dnorm(0, 100),
+    c(bh, bt) ~ dnorm(0, 10), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+precis(m5.14)
+plot(precis(m5.14))
+```
+
+# 5.4 | Categorical Variables 
+
+## 5.4.1 | Binary Categories 
+
+```{r}
+data(Howell1)
+d <- Howell1 
+str(d)
+```
+
+Our model with the dummy variable for maleness: 
+
+$h_i \sim \mathrm{Normal}(\mu_i, \sigma)$
+$\mu_i = \alpha + \beta_m m_i$
+$\alpha \sim \mathrm{Normal}(178, 100)$
+$\beta_m \sim \mathrm{Normal}(0, 10)$
+$\sigma \sim \mathrm{Uniform}(0, 50)$
+
+```{r}
+# fit the model 
+m5.15 <- map(
+  alist(
+    height ~ dnorm(mu, sigma), 
+    mu <- a + bm*male, 
+    a ~ dnorm(178, 100), 
+    bm ~ dnorm(0, 10), 
+    sigma ~ dunif(0, 50)
+  ), data = d
+)
+
+precis(m5.15)
+plot(precis(m5.15))
+```
+
+To interpret our estimates, we see that $\alpha$ is the average height amongst females, and the average male height is 7.28 cm taller. 
+
+To derive a percentile interval for average male height, we can sample from the posterior 
+
+```{r}
+post <- extract.samples(m5.15) 
+mu.male <- post$a + post$bm 
+PI(mu.male)
+```
+
+#### Overthinking : Reparameterizing the model 
+
+Instead of using a parameter for males and females, we can make our parameters specific to males and females: 
+
+$h_i \sim \mathrm{Normal}(\mu_i, \sigma)$ 
+$\mu_i = \alpha_f (1 - m_i) + \alpha_m m_i$ 
+
+Where $\alpha_f$ is the average female height and $\alpha_m$ is the average male height. We can then plug in $\m_i$ = 0 or 1 to verify that either $\alpha_f$ or $\alpha_m$ is turned on for the individual case i. 
+
+```{r}
+# fit the model 
+m5.15b <- map(
+  alist(
+    height ~ dnorm(mu, sigma), 
+    mu <- af * (1 - male) + am * male, 
+    af ~ dnorm(178, 100), 
+    am ~ dnorm(178, 100), 
+    sigma ~ dunif(0, 50)
+  ), data = d
+)
+
+```
+
+## 5.4.2 | Many Categories 
+
+The general rule of thumb: for k categories, use k-1 dummy variables. 
+
+```{r}
+data(milk)
+d <- milk
+unique(d$clade)
+```
+
+```{r}
+# to create dummy variables for the New World Monkey category 
+(d$clade.NWM <- ifelse(d$clade == "New World Monkey", 1, 0))
+
+# old world monkey 
+(d$clade.OWM <- ifelse(d$clade == "Old World Monkey", 1, 0))
+
+# strepsirrhine 
+(d$clade.S <- ifelse(d$clade == "Strepsirrhine", 1, 0))
+
+```
+```{r}
+m5.16 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a + b.NWM * clade.NWM + b.OWM * clade.OWM + b.S * clade.S, 
+    a ~ dnorm(0.6, 10), 
+    b.NWM ~ dnorm(0, 1), 
+    b.OWM ~ dnorm(0, 1), 
+    b.S ~ dnorm(0, 1),
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+precis(m5.16)
+```
+
+The estimate a is the average milk energy for apes, and the estimates for the other categories are differences from apes. 
+To get posterior distributions of the average milk energy in each category, we can again use samples from the posterior: 
+
+```{r}
+# sample posterior 
+post <- extract.samples(m5.16)
+
+# compute averages for each category 
+mu.ape <- post$a 
+mu.NWM <- post$a + post$b.NWM 
+mu.OWM <- post$a + post$b.OWM 
+mu.S <- post$a + post$b.S
+
+# summarize using precis 
+precis(data.frame(mu.ape, mu.NWM, mu.OWM, mu.S))
+```
+
+From the table above, we see that the most plausible (conditional on data and model) average milk energies in each column are 0.55, 0.71, 0.79, and 0.51. 
+
+Once we get accustomed to manipulating estimates this way, we can effectively reparameterize our model after we've already fit it to the data. 
+
+For example, suppose we wanted to know the estimated difference between two monkey groups. Then we can subtract the estimated means and get a difference 
+
+```{r}
+diff.NWM.OWM <- mu.NWM - mu.OWM
+quantile(diff.NWM.OWM, probs = c(0.025, 0.5, 0.975))
+```
+
+## 5.4.3 | Adding Regular Predictor Variables 
+
+We can stack many indicator variables and continuous variables together in a model. 
+
+## 5.4.4 | Another approach: Unique intercepts 
+
+Another way to conceptualize categorical variables is to construct a vector of intercept parameters, one parameter for each category. Then we can create an **index variable** in our data frame that says which parameter goes with each case. 
+
+```{r}
+(d$clade_id <- coerce_index(d$clade))
+```
+
+This variable gives the number of each unique clade value. There are 4 different clade values. Then we can tell map to make a vector of intercepts, one intercept for each unique value in clade_id 
+
+```{r}
+m5.16_alt <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, sigma), 
+    mu <- a[clade_id], 
+    a[clade_id] ~ dnorm(0.6, 10), 
+    sigma ~ dunif(0, 10)
+  ), data = d
+)
+
+precis(m5.16_alt, depth = 2)
+```
+
+# 5.5 | Ordinary Least Squares and lm 
+
+Ordinary Least Squares solves for the parameter values that minimize the sum of the squared residuals. This procedure is often functionally equivalent to maximizing the posterior probability or maximizing the likelihood. Carl Friedrich Gauss invented OLS as a method of computing Bayesian MAP estimates. 
+
+## 5.5.2 | Using lm 
+
+```{r}
+# regular fits
+m5.17 <- lm(y ~ 1 + x, data = d)
+m5.18 <- lm(y ~ 1 + x + z + w, data = d)
+
+# intercepts are optional. These models return the same estimates 
+m5.17 <- lm(y ~ 1 + x, data = d)
+m5.19 <- lm(y ~ x, data = d)
+
+# When you omit the intercept, lm assumes you wanted one. We can use these forms to make certain there is no intercept 
+m5.20 <- lm(y ~ 0 + x, data = d)
+m5.21 <- lm(y ~ x - 1, data = d)
+```
+
+When using categorical variables, its best to explicitly tell R when we are using a categorical variable as opposed to relying on its innate ability to generate indicator variables 
+
+```{r}
+m5.22 <- lm(y ~ 1 + as.factor(season), data = d)
+```
+
+When including transformed predictors, its best to transform them before adding them to the lm call 
+
+```{r}
+d$x2 <- d$x^2 
+d$x3 <- d$x^3 
+
+m5.23 <- lm(y ~ 1 + x + x2 + x3, data = d)
+
+# alternatively we can use I() to make R treat the model as is. We cannot use I() inside map
+m5.24 <- lm(y ~ 1 + x + I(x^2) + I(x^3), data = d)
+```
+
+We can build map formulas from lm formulas with the rethinking package :
+
+```{r}
+data(cars)
+
+glimmer(dist ~ speed, data = cars)
+```
+
+
 
