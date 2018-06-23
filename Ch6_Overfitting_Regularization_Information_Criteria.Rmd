@@ -245,7 +245,146 @@ sum(waic_vec)
 data(milk)
 d <- milk[complete.cases(milk),]
 
-# 
+# standardize neocortex percent 
+d$neocortex <- d$neocortex.perc / 100 
+dim(d)
 
 ```
 
+It is important that we remove incomplete cases (those containing any missing values), because we must make sure that *compared models fit to exactly the same observations*.
+
+```{r}
+# fit 4 models. Use trick to make sigma positive with ln(e(sigma))
+
+# define starting points for optim 
+a.start <- mean(d$kcal.per.g)
+sigma.start <- log(sd(d$kcal.per.g))
+
+m6.11 <- map(
+  alist(
+    kcal.per.g ~ dnorm(a, exp(log.sigma))
+  ), data = d, start = list(a = a.start, log.sigma = sigma.start)
+)
+
+m6.12 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, exp(log.sigma)), 
+    mu <- a + bn*neocortex
+  ), data = d, start = list(a = a.start, bn = 0, log.sigma = sigma.start)
+)
+
+m6.13 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, exp(log.sigma)), 
+    mu <- a + bm*log(mass)
+  ), data = d, start = list(a = a.start, bm = 0, log.sigma = sigma.start)
+)
+
+m6.14 <- map(
+  alist(
+    kcal.per.g ~ dnorm(mu, exp(log.sigma)), 
+    mu <- a + bn*neocortex + bm*log(mass)
+  ), data = d, start = list(a = a.start, bn = 0, bm = 0, log.sigma = sigma.start)
+)
+
+```
+
+### 6.5.1.1 | Comparing WAIC values 
+
+To compare models using an information criterion, we must first compute the criterion. Then we can rank models from lowest (best) to worst (highest) and calculate weights, which provide a more interpretable measure of the relative distances among the models. 
+
+```{r}
+# compute WAIC
+WAIC(m6.14)
+
+# rank models by WAIC 
+(milk.models <- compare(m6.11, m6.12, m6.13, m6.14))
+```
+
+*WAIC* is the WAIC for each model. In this case, m6.14 is the lowest (-15.4), so it is ranked first 
+*pWAIC* is the estimated effective number of parameters. This provides a clue as to how flexible each model is in fitting the sample 
+*dWAIC* is the difference between each WAIC and the lowest WAIC. 
+*weight* is the Akaike weight for each model. A model's weight is an estimate of the probability that the model will make the best predictions on the new data, conditional on the set of models considered. 
+*SE* is the standard error of the WAIC estimate. The uncertainty of the model is well approximated by the standard error. 
+*dSE* is the se of the difference between the best model and the current model. 
+
+```{r}
+# plot 
+plot(milk.models, SE = TRUE, dSE = TRUE)
+```
+
+### 6.5.1.2 | Comparing Estimates 
+
+In addition to comparing models on the basis of expected test deviance, it is also useful to compare paramter estimates among models. 
+
+```{r}
+# the coeftab function takes a series of fit models as input and builds a table that compares models with different combinations of parameters 
+coeftable <- coeftab(m6.11, m6.12, m6.13, m6.14)
+
+plot(coeftable)
+```
+
+## 6.5.2 | Model Averaging 
+
+```{r}
+# plot counterfactual predictions with neocortex from 0.5 to 0.8 
+
+# create neocortex sequence
+nc.seq <- seq(from = 0.5, to = 0.8, length.out = 30)
+
+# predictor list 
+d.predict <- list(
+  kcal.per.g = rep(0, 30), # empty outcome 
+  neocortex = nc.seq,      # sequence of neocortex
+  mass = rep(4.5, 30)      # average mass
+)
+
+# link function, computes mu for each sample in the posterior
+pred.m614 <- link(m6.14, data = d.predict)
+
+# apply mean to link function 
+mu <- apply(pred.m614, 2, mean)
+
+# apply probability interval to link function
+mu.PI <- apply(pred.m614, 2, PI)
+
+# plot it all 
+plot(kcal.per.g ~ neocortex, d, col = rangi2)
+lines(nc.seq, mu, lty = 2)
+lines(nc.seq, mu.PI[1,], lty = 2)
+lines(nc.seq, mu.PI[2,], lty = 2)
+
+```
+
+Above we have a plot which shows the relationship between neocortex percent and kcal.per.g of milk according to model 6.14. 
+Now we will compute and add model averaged posterior predictions, through computing an **ensemble** of posterior predictions. 
+
+Conceptual Procedure: 
+  1. Compute WAIC (or other information criterion) for each model
+  2. Compute the weight for each model 
+  3. Compute linear model and simulated outcomes for each model 
+  4. Combine these values into an esnemble of predictions, using the model weights as proportions. 
+  
+We will do this with the ensemble function, which simply calls link and sim for each model we give it. It then combines the results according to Akaike weights.
+
+```{r}
+# build an ensemble according to WAIC weight 
+milk.ensemble <- ensemble(m6.11, m6.12, m6.13, m6.14, data = d.predict)
+
+# add means 
+mu <- apply(milk.ensemble$link, 2, mean)
+
+# add probability intervals 
+mu.PI <- apply(milk.ensemble$link, 2, PI)
+
+# plot 
+plot(kcal.per.g ~ neocortex, d, col = rangi2)
+lines(nc.seq, mu, lty = 2)
+lines(nc.seq, mu.PI[1,], lty = 2)
+lines(nc.seq, mu.PI[2,], lty = 2)
+lines(nc.seq, mu)
+shade(mu.PI, nc.seq)
+
+```
+
+The regression line has hardly moved because m6.14 had 90% of the weight. Model ensembling did have a big effect on the intervals of $\mu$.
