@@ -1,0 +1,281 @@
+---
+title: "Ch8_Markov_Chain_Monte_Carlo"
+author: "Michael Rose"
+date: "June 23, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+```
+
+In this chapter we will estimate posterior probability distributions using **Markov Chain Monte Carlo**. In this case, we will produce samples from the joint posterior of a model without maximizing anything. This allows us to sample from the posterior without assuming any particular shape of the posterior (like quadratic and other approximations).  
+
+# 8.1 | Good King Markov and His Island Kingdom
+
+```{r}
+# implement metropolic algorithm 
+num_weeks <- 1e5 
+positions <- rep(0, num_weeks)
+current <- 10
+
+for (i in 1:num_weeks){
+  # record current position 
+  positions[i] <- current 
+  
+  # flip coin to generate proposal 
+  proposal <- current + sample(c(-1, 1), size = 1)
+  
+  # now make sure he loops around archipelago
+  if (proposal < 1) proposal <- 10 
+  if (proposal > 10) proposal <- 1
+  
+  # move?
+  prob_move <- proposal / current 
+  current <- ifelse(runif(1) < prob_move, proposal, current)
+}
+
+plot(positions)
+
+```
+
+# 8.2 | Markov Chain Monte Carlo 
+
+## 8.2.1 | Gibbs Sampling 
+
+The metropolis algorithm works whenever the probability of proposing a jump from B to A is equal to the probability of proposing A from B, when the proposal distribution is symmetric. The generalized version, Metropolis-Hastings allows for asymmetric proposals. 
+
+**Gibbs Sampling** is a variant of the Metropolis Hastings algorithm that uses clever proposals. The improvement over the metropolis algorithm arises from *adaptive proposals* in which the distribution of proposed parameter values adjust themselves intelligently, depending on the parameter values at the moment. Gibbs sampling computes these adaptive proposals using particular combinations of prior distributions and likelihoods known as *conjugate pairs*. Conjugate pairs have analytical solutions for the posterior distribution of an individual parameter, and these allow it to make smart jumps around the joint posterior distribution of all parameters. 
+
+## 8.2.2 | Hamiltonian Monte Carlo 
+
+**Hamiltonian Monte Carlo** is another sampler that is more computationally costly than Metropolis or Gibbs, but its proposals are typically more efficient. HMC also scales better than Gibbs or Metropolis to models with thousands of parameters. 
+
+# 8.3 | Easy HMC: Map2Stan
+
+The rethinking package contains an interface, map2stan, that compiles lists of formulas (like we've been using) into stan HMC code. 
+
+To use map2stan we need to preprocess any variable transformations and construct a clean data frame with only the variables we are going to use. 
+
+```{r}
+# load ruggedness data 
+data(rugged)
+d <- rugged
+
+# transformations 
+d$log_gdp <- log(d$rgdppc_2000)
+dd <- d[complete.cases(d$rgdppc_2000),]
+
+# fit model to predict log-GDP with terrain ruggedness, continent and the interaction of the two
+m8.1 <- map(
+  alist(
+    log_gdp ~ dnorm(mu, sigma), 
+    mu <- a + bR * rugged + bA * cont_africa + bAR * rugged * cont_africa,
+    a ~ dnorm(0, 100), 
+    bR ~ dnorm(0, 10), 
+    bA ~ dnorm(0, 10), 
+    bAR ~ dnorm(0, 10),
+    sigma ~ dunif(0, 10)
+  ), data = dd
+)
+
+precis(m8.1)
+
+
+```
+
+## 8.3.1 | Preparation 
+
+We will no longer be using quadratic approximation, but instead Hamiltonian Monte Carlo. This will allow us to fit models that aren't Gaussian. We can use the same formula list as before, but we need to do two additional things: 
+  1. Preprocess all variable transformations. 
+  2. Make a trimmed down data frame that contains only the variables we will use to fit the model 
+
+```{r}
+# choose columns for model fit 
+dd.trim <- dd[, c("log_gdp", "rugged", "cont_africa")]
+str(dd.trim)
+
+```
+
+## 8.3.2 | Estimation 
+
+```{r}
+m8.1stan <- map2stan(
+  alist(
+    log_gdp ~ dnorm(mu, sigma), 
+    mu <- a + bR * rugged + bA * cont_africa + bAR * rugged * cont_africa, 
+    a ~ dnorm(0, 100), 
+    bR ~ dnorm(0, 10), 
+    bA ~ dnorm(0, 10), 
+    bAR ~ dnorm(0, 10), 
+    sigma ~ dcauchy(0, 2)
+  ), data = dd.trim, cores = 4
+)
+
+precis(m8.1stan)
+```
+
+## 8.3.3 | Sampling again, in parallel
+
+```{r}
+# detect number of cores available for multicore processing
+detectCores()
+
+# sample 4 markov chains from our stan model
+m8.1stan_4chains <- map2stan(m8.1stan, chains = 4, cores = 4)
+
+# see output
+precis(m8.1stan_4chains)
+
+```
+
+## 8.3.4 | Visualization
+
+```{r}
+# pull samples 
+post <- extract.samples(m8.1stan)
+str(post)
+
+# visualize
+pairs(post)
+pairs(m8.1stan)
+```
+
+## 8.3.5 | Using the Samples 
+
+```{r}
+# check summary of stan model, specifically for WAIC
+show(m8.1stan)
+```
+
+## 8.3.6 | Checking the Chain
+
+If we want to check the progress of our markov chain to make sure its working correctly, we can use a *trace plot*.
+
+```{r}
+# trace plot
+tracerplot(m8.1stan)
+
+# look at raw stan code
+stancode(m8.1stan)
+
+```
+
+# 8.4 | Care and feeding of your Markov Chain 
+
+## 8.4.1 | How many samples do you need?
+
+We can control the number of samples from the chain with the iter and warmup parameters. Defaults are 2000 for iter and 1000 for warmup. 
+
+## 8.4.2 | How many chains do you need? 
+
+When debugging a model, use a single chain 
+When deciding whether the chains are valid, we need more than one chain 
+When we do inference, we only really need one chain
+
+For typical regression models, we can live by the motto *four short chains to check, one long chain for inference*.
+
+#### Rethinking | Convergence Diagnostics 
+
+The diagnostic output from stan includes two metrics, *n_eff* and *Rhat*. 
+*n_eff* is a measure of the effective number of samples. When n_eff is much lower than the actual number of iterations (minus warmup) of our chains, it means the chains are inefficient, but possibly still ok. 
+*Rhat* is the Gelman-Rubin convergence diagnostic. If rhat is above 1, it means that our chain has not yet converged and we shouldn't trust the samples. 
+
+## 8.4.3 | Taming a Wild Chain
+
+A common problem with some models is that there are broad, flat regions of the posterior density - this happens most often when we use flat priors. This can generate wild, wandering markov chains that erratically sample extremely positive and negative parameter values. 
+
+```{r}
+# try to estimate the mean and standard deviation of the two Gaussian observations, -1 and 1 with flat priors 
+y <- c(-1, 1)
+
+m8.2 <- map2stan(
+  alist(
+    y ~ dnorm(mu, sigma), 
+    mu <- alpha
+  ),
+  data = list(y=y), start = list(alpha = 0, sigma = 1), chains = 2, iter = 4000, warmup = 1000
+)
+
+precis(m8.2)
+
+tracerplot(m8.2)
+
+```
+
+Our model above has wild predictions because its flailing around without informative priors. 
+
+```{r}
+# add priors 
+m8.3 <- map2stan(
+  alist(
+    y ~ dnorm(mu, sigma),
+    mu <- alpha,
+    alpha ~ dnorm(1, 10),
+    sigma ~ dcauchy(0, 1)
+  ), 
+  data = list(y = y), start = list(alpha = 0, sigma = 1), chains = 2, cores = 4, iter = 4000, warmup = 1000
+)
+
+precis(m8.3)
+
+```
+
+#### Overthinking | Cauchy Distribution
+
+```{r}
+y <- rcauchy(1e4, 0, 5)
+mu <- sapply(1:length(y), function(i) sum(y[1:i])/i)
+plot(mu, type = "l")
+```
+
+## 8.4.4 | Non-identifiable parameters 
+
+Earlier in the book we looked at the problem of highly correlated predictors and the non identifiable parameters they can create. Now we can look inside of a markov chain and identify these problem parameters.
+
+First we must construct a non-identifiable model: 
+
+```{r}
+# simulate 100 observations from a Gaussian distribution with mean 0 and sd 1
+y <- rnorm(100, mean = 0, sd = 1)
+
+# fit model with no priors
+m8.4 <- map2stan(
+  alist(
+    y ~ dnorm(mu, sigma), 
+    mu <- a1 + a2,
+    sigma ~ dcauchy(0, 1)
+  ),
+  data = list(y = y), start = list(a1 = 0, a2 = 0, sigma = 1), chains = 2, cores = 4, iter = 4000, warmup = 1000
+)
+
+# look at garbage
+precis(m8.4)
+
+# look at plot
+tracerplot(m8.4)
+
+# fit model with priors 
+m8.5 <- map2stan(
+  alist(
+    y ~ dnorm(mu, sigma), 
+    mu <- a1 + a2, 
+    a1 ~ dnorm(0, 10), 
+    a2 ~ dnorm(0, 10), 
+    sigma ~ dcauchy(0, 1)
+  ), 
+  data = list(y = y), start = list(a1 = 0, a2 = 0, sigma = 1), chains = 2, cores = 2, iter = 4000, warmup = 1000
+)
+
+# much better
+precis(m8.5)
+
+# plot
+tracerplot(m8.5)
+
+
+```
+
+Often a model that is slow to sample is under-identified. Andrew Gelman calls this the **Folk Theorem of Statistical Computing**. 
+
