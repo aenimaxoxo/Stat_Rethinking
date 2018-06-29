@@ -1,0 +1,161 @@
+---
+title: "Ch9_Big_Entropy_and_the_Generalized_Linear_Model"
+author: "Michael Rose"
+date: "June 26, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+```
+
+# Big Entropy and the Generalized Linear Model
+
+When a researcher wants to build an unconvential model, we should bet on the distribution with the biggest entropy. 
+Justifications:
+  1. The distribution with the biggest entropy is the widest and least informative distribution 
+  2. Nature tends to produce empirical distributions that have high entropy.
+  3. It tends to work well. 
+  
+This chapter serves as a conceptual introduction to **Generalized Linear Models** and the principle of **Maximum Entropy**. 
+
+A generalized linear model is a model that replaces a parameter of a likelihood function with a linear model. GLMs don't require gaussian likelihoods, so any function can be used and linear models can be attached to any or all of the parameters that describe its shape. 
+
+The principle of maximum entropy helps us choose likelihood functions by providing a way to use stated assumptions about constraints on the outcome variable to choose the likelihood function that is the most conservative distribution compatible with the known constaints. 
+
+The chapters ahead build computational skills for working with different flavors of GLM. Ch 10 addresses models for count variables, 11 explores more complicated models such as ordinal outcomes and mixtures.
+
+# 9.1 | Maximum Entropy 
+
+We seek a measure of uncertainty that satisfy three criteria: 
+  1. The measure should be continuous 
+  2. It should increase as the number of possible events increases
+  3. It should be additive
+  
+This is satisfied with the principle of *maximum entropy*. The simplest way to state maximum entropy is as such: 
+
+*The distribution that can happen the most ways is also the distribution with the biggest information entropy. The distribution with the biggest entropy is the most coservative distribution that obeys its constraints.*
+
+```{r}
+# simulation
+p <- list()
+p$A <- c(0, 0, 10, 0, 0)
+p$B <- c(0, 1, 8, 1, 0)
+p$C <- c(0, 2, 6, 2, 0)
+p$D <- c(1, 2, 4, 2, 1)
+p$E <- c(2, 2, 2, 2, 2)
+
+# normalize each such that its a probability distribution 
+p_norm <- lapply(p, function(q) q / sum(q))
+
+# compute the information entropy of each 
+H <- sapply(p_norm, function(q) -sum(ifelse(q == 0, 0, q * log(q))))
+```
+
+The highest information entropy is E, because 2 pebbles in each has the most ways that it can possibly happen. 
+
+```{r}
+# compute log for number of ways each distribution can be realized, then divide by 10, the number of pebbles 
+ways <- c(1, 90, 1260, 113400)
+logwayspp <- log(ways) / 10
+logwayspp
+```
+
+The distribution that can happen the greatest number of ways is the most plausible distribution. This is called the **Maximum Entropy Distribution**. 
+
+## 9.1.2 | Binomial
+
+We want to demonstrate that binomial has the largest entropy of any distribution that satisfies the following constraints: 
+  1. Only two unordered events 
+  2. Constant expected value 
+
+```{r}
+# build list of the candidate distributions 
+p <- list()
+p[[1]] <- c(1/4, 1/4, 1/4, 1/4)
+p[[2]] <- c(2/6, 1/6, 1/6, 2/6)
+p[[3]] <- c(1/6, 2/6, 2/6, 1/6)
+p[[4]] <- c(1/8, 4/8, 2/8, 1/8)
+
+# compute expected value of each 
+sapply(p, function(p) sum(p * c(0, 1, 1, 2)))
+
+# compute entropy of each distribution 
+sapply(p, function(p) -sum(p * log(p)))
+
+```
+
+```{r}
+# What if expected value != 1 ? 
+p <- 0.7
+A <- c((1-p)^2, p*(1-p), (1-p)*p, p^2)
+A
+
+# entropy of distribution A
+-sum(A * log(A))
+
+# create a function that generates distributions with expected value 1.4. Returns entropy along with distribution
+sim.p <- function(G = 1.4){
+  x123 <- runif(3)
+  x4 <- ((G) * sum(x123) - x123[2] - x123[3]) / (2 - G)
+  z <- sum(c(x123, x4))
+  p <- c(x123, x4) / z 
+  list(H = -sum(p * log(p)), p = p)
+}
+
+sim.p()
+
+# call it 100000 times and plot the distribution
+H <- replicate(1e5, sim.p(1.4))
+dens(as.numeric(H[1,]), adj = 0.1)
+
+entropies <- as.numeric(H[1,])
+distributions <- H[2,]
+
+max(entropies)
+
+distributions[which.max(entropies)]
+```
+Lessons to take away from this binomial example: 
+  1. Maximum entropy nature of the binomial distribution. When only two unordered outcomes are possible, such as blue and white marbles, and the expected numbers of each type of event are assumed to be constant, then the distribution that is most consistent      with these constraints is the binomial distribution. This distribution spreads probability out as evenly and conservatively as possible. 
+  2. Usually we don't know the expected value, but which to estimate it. This is the same problem. If we assume that the outcome has constant expected value, we can calculate it from the data - the unknown expected variable being np. If only two unordered       outcomes are possible and you think the process generating them is invariant in time - so that the expected value remains constant at each combination of predictor values - then the distribution that is most conservative is the binomial. 
+
+# 9.2 | Generalized Linear Models 
+
+By using all of our prior knowledge about the outcome variable, usually in the form of constraints on the possible values it can take, we can appeal to maximum entropy for the choice of distribution. Then all we have to do is generalize the linear regression strategy - replace a parameter describing the shape of the likelihood with a linear model - to probability distributions other than gaussian. 
+
+This is a **Generalized Linear Model** and it results in models that look like this: 
+
+$y_i \sim \mathrm{Binomial}(n, p_i)$ 
+$f(p_i) = \alpha + \beta x_i$
+
+The first thing to notice is that the likelihood is binomial. For a count outcome y for which each observation arises from n trials and with constant expected value np, the binomial distribution has maximum entropy. 
+The second thing to notice is that the second equation is a function, known as a **Link Function**. Generalized linear models need a link function because there is rarely a $\mu$, and rarely are parameters unbounded in both directions like mu is. 
+
+## 9.2.1 | Meet the family 
+
+The most common distributions used in statistical modeling are members of a family known as the *Exponential Family*. Every member of this family is a maximum entropy distribution for some set of constraints. 
+
+[image](/home/michael/Desktop/SS/Stat_RT/glm_models)
+
+We already went over gaussian and binomial, so the chapter goes over some of the others: 
+
+*Exponential Distribution* - Constrained to be zero or positive. Used for distance and duration, kinds of measurements that represent displacement from some point of reference, either in time or space. If the probability of an event is constant in time or across space, then the distribution of events tends towards exponential. This distribution is the core of survival and event history analysis. 
+
+*Gamma Distribution* - Also zero or positive. It is also based on distance or duration, but can have a peak above zero. If an event can only happen after two or more exponentially distributed events happen, the resulting waiting times will be gamma distributed. It has maximum entropy among all distributions with the same mean and same average logarithm. Its common in survival and event history analysis, as well as some contexts in which continuous measurement is constrained to be positive. It is the sum of multiple exponentials.
+
+*Poisson Distribution* - A count distribution like the binomial, but it is for distributions with high n and low p.
+
+## 9.2.2 | Linking linear models to distributions 
+
+To build a regression model from any of the exponential family distributions in just a matter of attaching one or more linear models to one or more of the parameters that describe the distributions shape. 
+Some common link functions are the logit link or a log link. 
+
+The *logit link* maps a parameter that is defined as a probability mass, thus constrained between 0 and 1, onto a linear model that can take any real value. 
+
+$\mathrm{logit}(p_i) = \alpha + \beta x_i$ where the logit itself is defined as the log odds $\mathrm{logit}(p_i) = \log(\frac{p_i}{1 - p_i})$. The odds of an event are just the probability it happens divided by the probability it doesn't happen. So all thats being stated is the following: $\log(\frac{p_i}{1 - p_i}) = \alpha + \beta x_i$. Then we can solve for p_i. $p_i = \frac{\exp(\alpha + \beta x_i)}{1 + \exp(\alpha + \beta x_i)}$. This equation is called the logistic. 
+
+#### Rethinking | When in doubt, play with assumptions 
+
+*Sensitivity Analysis* explores how changes in assumptions influence inference. If none of the alternative assumptions we consider have much impact on inference, thats worth reporting.
