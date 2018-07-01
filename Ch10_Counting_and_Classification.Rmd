@@ -1,0 +1,945 @@
+---
+title: "Ch10_Counting_and_Classification"
+author: "Michael Rose"
+date: "June 28, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 10 | Counting and Classification 
+
+The two most common count regressions: 
+
+**Binomial Regression** : These model a binary classification - alive/dead, accept/reject, left/right - for which the total of both categories is known. 
+**Poisson Regression** : Models a count outcome without a known maximum - e.g. number of elephants in Kenya, number of people who apply to a physics PhD program, number of significance tests in an issue of Psychological Science. We can conceive of this as a binomial model with a very large maximum and a very small probability per trial. 
+
+# 10.1 | Binomial Regression 
+
+There are two common flavors of GLM that use binomial likelihood functions: 
+  1. *Logistic Regression* - binary classification
+  2. *Aggregated Binomial Regression* - When individual trials with the same covariate values are instead aggregated together. The outcome can take any value within [0, n], where n is the number of trials. 
+  
+## 10.1.1 | Logistic Regression : Prosocial Chimpanzees 
+
+```{r}
+library(rethinking)
+data(chimpanzees)
+d <- chimpanzees
+```
+
+Now we can fit our model: 
+$L_i \sim \mathrm{Binomial}(1, p_i)$ 
+$\mathrm{logit}(p_i) = \alpha + (\beta_p + \beta_{pc}C_i)P_i$ 
+$\alpha \sim \mathrm{Normal}(0, 10)$ 
+$\beta_P \sim \mathrm{Normal}(0, 10)$ 
+$\beta_{PC} \sim \mathrm{Normal}(0, 10)$
+
+Where L indicates pulled_left, P indicates prosoc_left and C indicates condition. 
+
+```{r}
+# first we fit the intercept only model 
+m10.1 <- map(
+  alist(
+    pulled_left ~ dbinom(1, p), 
+    logit(p) <- a, 
+    a ~ dnorm(0, 10)
+  ), data = d
+)
+
+precis(m10.1)
+
+```
+
+Interpreting the output above: 
+  - Since the parameters in a logistic regression are in log odds, we need to use the inverse link function 
+```{r}
+# intercept 
+logistic(0.32)
+
+logistic(c(0.18, 0.46))
+```
+  
+So the probability of pulling the left lever (antisocial option) is 57.9%, with an 89% interval of [54.4, 61.3]. 
+
+```{r}
+# fit more models 
+
+m10.2 <- map(
+  alist(
+    pulled_left ~ dbinom(1, p), 
+    logit(p) <- a + bp*prosoc_left, 
+    a ~ dnorm(0, 10), 
+    bp ~ dnorm(0, 10)
+  ), data = d
+)
+
+m10.3 <- map(
+  alist(
+    pulled_left ~ dbinom(1, p), 
+    logit(p) <- a + (bp + bpC * condition) * prosoc_left, 
+    a ~ dnorm(0, 10), 
+    bp ~ dnorm(0, 10), 
+    bpC ~ dnorm(0, 10)
+  ), data = d
+)
+
+# compare the tree models 
+compare(m10.1, m10.2, m10.3)
+
+# plot comparison 
+plot(compare(m10.1, m10.2, m10.3))
+
+```
+
+```{r}
+# look at estimates for 10.2 and 10.3 
+precis(m10.2)
+precis(m10.3)
+```
+
+The estimated effect of bpC is negative, with a wide posterior on both sides of 0. Therefore, these estimates suggest that the chimpanzees did not case much about the other animal's presence. They do however prefer to pull the prosocial level, evidenced by the bp coefficient being so high. 
+
+To get a better sense of the impact of 0.61 for bp, we have to distinguish between absolute effect and relative effect. 
+
+*Absolute Effect* is the change in the probability of the outcome. It depends on all the parameters and tells us the practical impact of a change in our predictor. 
+
+*Relative Effect* is a proportional change induced by a change of in the predictor.
+
+*Proportional Change in Odds* is the customary measure of relative effect for a logistic model. We can compute the proportional odds by exponentiating the parameter estimate. Odds are the ratio of the probability an event happens to the probability it doesn't happen. So in this case, the relevant odds are the odds of pulling the left hand level (the outcome variable). 
+```{r}
+exp(0.61)
+```
+
+This means a proportional increase of 1.84 in the odds of pulling the left hand level, or that the odds increase by 84%. 
+
+The major difficulty with the proportional odds is that the actual change in probability will also depend upon the intercept alpha, as well as any other predictor variables. GLMs like logistic regression induce interactions among all variables. Therefore, for this case, we can think of these interactions as resulting from both ceiling and floor effects - if the intercept is large enough to guarantee a pull, then increasing the odds by 84% isn't going to make it any more guaranteed. 
+
+For example, suppose alpha were estimated to have a value of 4. Then the probability of a pull would be 
+```{r}
+# probability of a pull
+logistic(4)
+
+# adding in an increase of 0.61 (estimate for bp) changes this to 
+logistic(4.61)
+```
+
+So we get a difference of less than 1%, despite the 84% increase in proportional odds. 
+
+Lets consider the model averaged posterior predictive check now, to get a sense of the absolute effect of each treatment on the probability of pulling the left hand lever. 
+```{r}
+# dummy data for predictions across treatments 
+d.pred <- data.frame(
+  prosoc_left = c(0,1,0,1), # RLRL
+  condition = c(0,0,1,1) # control / control / partner / partner
+)
+
+# build prediction ensemble 
+chimp.ensemble <- ensemble(m10.1, m10.2, m10.3, data = d.pred) 
+
+# summarize 
+pred.p <- apply(chimp.ensemble$link, 2, mean) 
+pred.p.PI <- apply(chimp.ensemble$link, 2, PI)
+
+# plotting 
+
+# empty plot frame with good axes 
+plot(0, 0, type = "n", xlab = "prosoc_left/condition", ylab = "proportion pulled left", ylim = c(0, 1), xaxt = "n", xlim = c(1, 4))
+axis(1, at = 1:4, labels = c("0/0", "1/0", "0/1", "1/1"))
+
+# plot raw data, one trend for each of 7 individual chimpanzees 
+# by() | 1st param is the variable we want to summarize. 2nd is a list of variables to slice up the first var by. Third in the function to apply to our first param 
+p <- by(d$pulled_left, 
+        list(d$prosoc_left, d$condition, d$actor), mean) 
+for (chimp in 1:7) lines(1:4, as.vector(p[,,chimp]), col = rangi2, lwd = 1.5)
+
+# now superimpose posterior predictions 
+lines(1:4, pred.p)
+shade(pred.p.PI, 1:4)
+```
+
+With GLMs, there is no guarantee of a Gaussian posterior distribution, even if all of our priors are Gaussian. Therefore, we should check that the quadratic approximation for the posterior distribution is ok in this case. 
+
+```{r}
+# refit with map2stan 
+
+# clean NAs from the data 
+d2 <- d
+d2$recipient <- NULL 
+
+# reuse map fit to get the formula
+m10.3stan <- map2stan(m10.3, data = d2, iter = 1e4, warmup = 1000) 
+
+# check output 
+precis(m10.3stan)
+precis(m10.3)
+
+# pairs plot 
+pairs(m10.3stan)
+
+```
+
+We want to have handedness as a variable, because some of the chimps may be left or right handed. This may be a case of a masking variable, so we should attempt to model it properly. 
+
+Here is the mathematical form of the model: 
+
+$L_i \sim \mathrm{Binomial}(1, p_i)$ 
+$\mathrm{logit}(p_i) = \alpha_{actor[i]} + (\beta_P + \beta_{pc} C_i) P_i$
+$\alpha_{actor} \sim \mathrm{Normal}(0, 10)$ 
+$\beta_p \sim \mathrm{Normal}(0, 10)$
+$\beta_{pc} \sim \mathrm{Normal}(0, 10)$
+
+where $\alpha_{actor[i]}$ is the value of actor for case i. 
+
+```{r}
+# fit model 
+m10.4 <- map2stan(
+  alist(
+    pulled_left ~ dbinom(1, p), 
+    logit(p) <- a[actor] + (bp + bpC * condition) * prosoc_left, 
+    a[actor] ~ dnorm(0, 10), 
+    bp ~ dnorm(0, 10), 
+    bpC ~ dnorm(0, 10)
+  ), data = d2, chains = 2, iter = 2500, warmup = 500, cores = 4
+)
+
+# check unique variables in actor
+unique(d$actor)
+
+# get estimates
+precis(m10.4, depth = 2)
+```
+
+We can see that the posterior is not gaussian, especially looking at the interval for a[2]. 
+
+```{r}
+# extract samples from posterior 
+post <- extract.samples(m10.4)
+str(post)
+
+# plot 
+dens(post$a[,2])
+```
+
+We can see a very strong skew here. Plausible values of a[2]  here are always positive, indicating a left hand bias. What has happened here is that many very large positive values are plausible, because actor 2 always pulled the left hand lever. As long as a[2] is large enough to get the probability close to 1, just about any value will lead to the same predictions. 
+
+We can appreciate the way these individual intercepts influence fit by plotting posterior predictions again 
+
+```{r}
+# plot a chimp of our choosing 
+chimp <- 1
+
+# choose values
+d.pred <- list(
+  pulled_left = rep(0, 4), # empty outcome
+  prosoc_left = c(0, 1, 0, 1), # RLRL
+  condition = c(0, 0, 1, 1), # control control partner partner 
+  actor = rep(chimp, 4)
+)
+
+# create link function, means, and PIs
+link.m10.4 <- link(m10.4, data = d.pred)
+pred.p <- apply(link.m10.4, 2, mean)
+pred.p.PI <- apply(link.m10.4, 2, PI) 
+
+# plot 
+plot(0, 0, type = "n", xlab = "prosoc_left / condition", ylab = "proportion pulled left", ylim = c(0, 1), xaxt = "n", xlim = c(1, 4), yaxp = c(0, 1, 2))
+axis(1, at = 1:4, labels = c("0/0", "1/0", "0/1", "1/1")) 
+mtext(paste("actor", chimp))
+
+p <- by(d$pulled_left, 
+        list(d$prosoc_left, d$condition, d$actor), mean) 
+lines(1:4, as.vector(p[,,chimp]), col = rangi2, lwd = 2) 
+lines(1:4, pred.p)
+shade(pred.p.PI, 1:4)
+```
+
+## 10.1.2 | Aggregated Binomial: Chimpanzees again, condensed 
+
+In the chimps data context, the models all calculated the likelihood of observing either 0 or 1 pulls of the left hand level. The models could do this because the data were organized such that each row describes the outcome of a single pull. In principle though, some of the data could be organized differently. If we don't care abouyt the order of the pulls, the same information is contained in a count of how many times each individual pulled the left hand level, for each combination of predictor variables. 
+
+```{r}
+# calculate the number of times each chimp pulled the left hand level, for each combo of predictors 
+data(chimpanzees)
+d <- chimpanzees
+
+# aggregate splits the data into subsets, computes summary stats for each, and returns the result 
+(d.aggregated <- aggregate(d$pulled_left, 
+                          list(prosoc_left = d$prosoc_left, condition = d$condition, actor = d$actor), 
+                          sum))
+```
+
+In the table above, the column x on the right is the count of times each actor pulled the left hand level for trials with the values of the predictors shown on each row. There are four different combinations of the two predictors, so there are four rows for each actor now. 
+
+```{r}
+# fit model 
+m10.5 <- map(
+  alist(
+    x ~ dbinom(18, p), 
+    logit(p) <- a + (bp + bpC * condition) * prosoc_left, 
+    a ~ dnorm(0, 10), 
+    bp ~ dnorm(0, 10), 
+    bpC ~ dnorm(0, 10)
+  ), data = d.aggregated
+)
+
+precis(m10.5)
+```
+
+## 10.1.3 | Aggregated Binomial: Graduate School Admissions 
+
+Often the number of trials on each row is not a constant. So then in place of the 18 we insert a variable from the data. 
+
+```{r}
+# load data 
+data(UCBadmit)
+d <- UCBadmit
+
+head(d)
+```
+
+Our job is to evaluate whether these data contain evidence of gender bias in admissions. We will model the admission decisions, focusing on applicant gender as a predictor variable. So we want to fit at least 2 models: 
+  1. A binomial regression that models admit as a function of each applicant's gender. This will estimate the associated between gender and probability       of admission 
+  2. A binomial regression that models admit as a constant, ignoring gender. This will allow us to get a sense of any overfitting committed by the first      model. 
+
+Our first model, in mathematical form: 
+  $n_{admit, i} \sim \mathrm{Binomial}(n_i, p_i)$ 
+  $\mathrm{logit}(p_i) = \alpha + \beta_m m_i$ 
+  $\alpha \sim \mathrm{Normal}(0, 10)$
+  $\beta_m \sim \mathrm{Normal}(0, 10)$ 
+n_i indicates applications[i], the number of applications on row i. The predictor m_i is a dummy variable that indicates male. 
+
+```{r}
+# models 
+
+# male indicator variable 
+d$male <- ifelse(d$applicant.gender == "male", 1, 0) 
+
+# first model 
+m10.6 <- map(
+  alist(
+    admit ~ dbinom(applications, p),
+    logit(p) <- a + bm * male, 
+    a ~ dnorm(0, 10), 
+    bm ~ dnorm(0, 10)
+  ), data = d
+)
+
+# second model 
+m10.7 <- map(
+  alist(
+    admit ~ dbinom(applications, p), 
+    logit(p) <- a, 
+    a ~ dnorm(0, 10)
+  ), data = d
+)
+
+# compare models 
+compare(m10.6, m10.7)
+```
+
+The comparison gives 100% of the weight to model 10.6, suggesting gender matters alot. 
+
+```{r}
+# check estimates for m10.6 
+precis(m10.6)
+
+# check relative difference for male coef 
+exp(0.61)
+```
+
+We get that a male applicant's odds were 184% of a female applicants. 
+
+```{r}
+# check absolute scales 
+
+# extract posterior samples 
+post <- extract.samples(m10.6) 
+p.admit.male <- logistic(post$a + post$bm) 
+p.admit.female <- logistic(post$a) 
+diff.admit <- p.admit.male - p.admit.female 
+quantile(diff.admit, c(0.025, 0.5, 0.975))
+
+# check density plot
+dens(diff.admit)
+```
+
+From the table above we gather that the median estimate of the male advantage is about 14%, with a 95% interval from 11% to almost 17%. 
+
+```{r}
+# plot posterior predictions for the model 
+postcheck(m10.6, n = 1e4)
+
+# draw lines connecting points from the same dept 
+for (i in 1:6){
+  x <- 1 + 2*(i-1)
+  y1 <- d$admit[x]/d$applications[x] 
+  y2 <- d$admit[x+1] / d$applications[x+1]
+  lines(c(x, x+1), c(y1, y2), col = rangi2, lwd = 2)
+  text(x + 0.5, (y1 + y2)/2 + 0.05, d$dept[x], cex = 0.8, col = rangi2)
+}
+
+```
+
+We can see from above that these are pretty terrible predictions. There are only two departments in which our model predicted that women had a lower rate of admission than males - yet the model says that females should expect to have a 14% lower chance of admission. 
+
+This may seem like a coding mistake, but the model correctly answered what we asked: *What are the average probabilities of admission for females and males across all departments?* 
+
+The problem is that men and women do not have the same department application rates, which makes our answer misleading. 
+
+Instead of the question above, it would be better to ask the following: 
+*What is the average difference in probability of admission between females and males within departments?*
+
+So we will fit 2 models, one with just department id and no male indicator variable, and one with both 
+
+```{r}
+# make index
+d$dept_id <- coerce_index(d$dept) 
+
+# model with unique intercept for each dept 
+m10.8 <- map(
+  alist(
+    admit ~ dbinom(applications, p), 
+    logit(p) <- a[dept_id], 
+    a[dept_id] ~ dnorm(0, 10)
+  ), data = d
+)
+
+# model with male difference as well 
+m10.9 <- map(
+  alist(
+    admit ~ dbinom(applications, p), 
+    logit(p) <- a[dept_id] + bm*male, 
+    a[dept_id] ~ dnorm(0, 10), 
+    bm ~ dnorm(0, 10)
+  ), data = d
+)
+
+# compare all 4 models from this section 
+compare(m10.6, m10.7, m10.8, m10.9)
+```
+
+So WAIC says m10.8 is the best model. So the department effect seems to be very important. That said, the difference between 10.8 and 10.9 is very small, but the association of gender is what we are seeking to know
+
+```{r}
+precis(m10.9, depth = 2)
+```
+
+So now our estimate is in the opposite direction. 
+
+```{r}
+exp(-0.10)
+```
+
+A male has about a 90% chance compared to female counterparts, comparing within departments. 
+
+```{r}
+# plot posterior predictions for the model 
+postcheck(m10.9, n = 1e4)
+
+# draw lines connecting points from the same dept 
+for (i in 1:6){
+  x <- 1 + 2*(i-1)
+  y1 <- d$admit[x]/d$applications[x] 
+  y2 <- d$admit[x+1] / d$applications[x+1]
+  lines(c(x, x+1), c(y1, y2), col = rangi2, lwd = 2)
+  text(x + 0.5, (y1 + y2)/2 + 0.05, d$dept[x], cex = 0.8, col = rangi2)
+}
+
+```
+
+We can see from above that our model fits much better. 
+
+Before we move on, we should check the quadratic approximation. Since the chimpanzee data had a problem in which individual intercepts caused problems for quadratic approximation. 
+
+```{r}
+# fit model with stan
+m10.9stan <- map2stan(m10.9, chains = 2, iter = 2500, warmup = 500, cores = 4)
+
+# check coefficients
+precis(m10.9stan, depth = 2)
+```
+
+We get pretty much the same answer, so quadratic approximation is working well in this case. 
+
+## 10.1.4 | Fitting Binomial Regressions with glm 
+
+```{r}
+# create an aggregated binomial model with glm 
+m10.7glm <- glm(cbind(admit, reject) ~ 1, data = d, family = binomial) 
+m10.6glm <- glm(cbind(admit, reject) ~ male, data = d, family = binomial)
+m10.8glm <- glm(cbind(admit, reject) ~ dept, data = d, family = binomial) 
+m10.9glm <- glm(cbind(admit, reject) ~ male + dept, data = d, family = binomial)
+
+m10.9glm$coefficients
+```
+
+When the outcome is instead coded as 0/1, the input looks like a linear regression formula 
+
+```{r}
+data(chimpanzees)
+m10.4glm <- glm(pulled_left ~ as.factor(actor) + prosoc_left * condition - condition, data = chimpanzees, family = binomial)
+```
+
+Note the necessity of subtracting condition to remove the main effect from the model. 
+
+```{r}
+# we can use glimmer to build a map style model from a glm formula 
+glimmer(pulled_left ~ prosoc_left * condition - condition, data = chimpanzees, family = binomial)
+```
+
+Sometimes the implicit flat priors of glm lead to nonsense estimates. For example, consider the following simple data and model context: 
+
+```{r}
+# outcome and predictor almost perfectly associated 
+y <- c(rep(0, 10), rep(1, 10))
+x <- c(rep(-1, 9), rep(1, 11)) 
+
+# fit binomial glm 
+m.bad <- glm(y ~ x, data = list(y = y, x = x), family = binomial)
+
+precis(m.bad)
+
+```
+
+These intervals are way too wide. What has happened is that the outcome is so strongly associated with the predictor that the slope on x tries to grow very large. At large log odds, almost any value is just about as good as any other. So the uncertainty is asymmetric, and the flat prior does nothing to calm inference down on the high end of it. 
+
+The easy fix is to use a very weakly informative prior 
+```{r}
+# better
+m.good <- map(
+  alist(
+    y ~ dbinom(1, p), 
+    logit(p) <- a + b * x, 
+    c(a, b) ~ dnorm(0, 10)
+  ), data = list(y = y, x = x)
+)
+
+precis(m.good)
+
+# best 
+m.good.stan <- map2stan(m.good, cores = 4)
+pairs(m.good.stan)
+```
+
+# 10.2 | Poisson Regression 
+
+```{r}
+y <- rbinom(1e5, 1000, 1/1000)
+c(mean(y), var(y))
+```
+
+The mean and variance are nearly identical. This is a special shape of the binomial. This is the Poisson distribution, and it allows us to model binomial events for which the number of trials n is unknown or uncountably large. 
+
+To build a GLM with a Poisson likelihood, the go to link function is the log link. So to embed a linear model we use 
+
+$y_i \sim \mathrm{Poisson}(\lambda_i)$ 
+$\log(\lambda_i) = \alpha + \beta x_i$
+
+The log link ensures that lambda i is always positive, which is required of the expected value of a count outcome. It also implies an exponential relationship between predictors and the expected value. 
+
+The parameter lambda is the expected value, but its also commonly thought of as the rate. This allows us to make Poisson models for which the exposure varies across cases i. 
+
+## 10.2.1 | Example: Oceanic Tool Complexity 
+
+```{r}
+data(Kline)
+d <- Kline 
+d
+```
+
+The total_tools variable will be the outcome variable. We'll model the idea that: 
+  1. The number of tools increases with the log population size 
+  2. The number of tools increases with the contact rate 
+  3. The impact of population on tool counts is increased by high contact. 
+  
+```{r}
+# make some new columns with the log of population 
+d$log_pop <- log(d$population) 
+
+# create dummy variable for high contact 
+d$contact_high <- ifelse(d$contact == "high", 1, 0)
+```
+
+
+```{r}
+# fit our model
+m10.10 <- map(
+  alist(
+    total_tools ~ dpois(lambda), 
+    log(lambda) <- a + bp * log_pop + bc * contact_high + bpc * contact_high * log_pop, 
+    a ~ dnorm(0, 100), 
+    c(bp, bc, bpc) ~ dnorm(0, 1)
+  ), data = d
+)
+
+# check estimates 
+precis(m10.10, corr = TRUE) 
+plot(precis(m10.10))
+```
+
+```{r}
+# extract samples from posterior 
+post <- extract.samples(m10.10) 
+
+# calculate the expected tool count for a large society with high contact
+lambda_high <- exp(post$a + post$bc + (post$bp + post$bpc) * 8) 
+
+# calculate the expected tool count for a large society with low contact
+lambda_low <- exp(post$a + post$bp * 8)
+
+# calculate differences 
+diff <- lambda_high - lambda_low 
+sum(diff > 0) / length(diff)
+
+dens(diff)
+```
+
+We get a 95% plausibility that the high contact island has more tools than the low contact islands. 
+
+A better way to assess whether a predictor like contact_high is expected to improve prediction is to use model comparison. Since model comparisons are done on the scale of predicted outcomes, they automatically take account of these correlations. 
+
+```{r}
+# fit model with no interaction 
+m10.11 <- map(
+  alist(
+    total_tools ~ dpois(lambda), 
+    log(lambda) <- a + bp*log_pop + bc*contact_high, 
+    a ~ dnorm(0, 100), 
+    c(bp, bc) ~ dnorm(0, 1)
+  ), data = d
+) 
+
+# fit model with no contact rate 
+m10.12 <- map(
+  alist(
+    total_tools <-dpois(lambda), 
+    log(lambda) <- a + bp*log_pop, 
+    a ~ dnorm(0, 100), 
+    bp ~ dnorm(0, 1)
+  ), data = d
+)
+
+# fit model with no log population 
+m10.13 <- map(
+  alist(
+    total_tools ~ dpois(lambda), 
+    log(lambda) <- a + bc*contact_high, 
+    a ~ dnorm(0, 100), 
+    bc ~ dnorm(0, 1)
+  ), data = d
+)
+
+# fit model with intercept only 
+m10.14 <- map(
+  alist(
+    total_tools ~ dpois(lambda), 
+    log(lambda) <- a,
+    a ~ dnorm(0, 100)
+  ), data = d
+)
+
+# compare all using WAIC, with n = 1e4 for more stable WAIC estimates 
+(islands.compare <- compare(m10.10, m10.11, m10.12, m10.13, m10.14, n = 1e4))
+plot(islands.compare)
+```
+
+The top 2 models include both predictors, but the top model, m10.11, excludes the interaction between them. 
+
+To get a better sense of what these models imply, we can plot some counterfactual predictions, using an ensemble of the top three models (that have all the akaike weight). 
+
+```{r}
+# make plot of raw data to begin. pch indicates contact rate 
+pch <- ifelse(d$contact_high == 1, 16, 1) 
+
+# plot
+plot(d$log_pop, d$total_tools, col = rangi2, pch = pch, xlab = "log-population", ylab = "total tools") 
+
+# sequence of log population sizes to compute over 
+log_pop.seq <- seq(from = 6, to = 13, length.out = 30) 
+
+# compute trend for high contact islands 
+d.pred <- data.frame(
+  log_pop = log_pop.seq, 
+  contact_high = 1
+)
+
+lambda.pred.h <- ensemble(m10.10, m10.11, m10.12, data = d.pred)
+lambda.med <- apply(lambda.pred.h$link, 2, median)
+lambda.PI <- apply(lambda.pred.h$link, 2, PI) 
+
+# plot predicted trend for high contact islands 
+lines(log_pop.seq, lambda.med, col = rangi2) 
+shade(lambda.PI, log_pop.seq, col = col.alpha(rangi2, 0.2))
+
+# compute trend for low contact islands 
+d.pred <- data.frame(
+  log_pop = log_pop.seq, 
+  contact_high = 0
+)
+lambda.pred.l <- ensemble(m10.10, m10.11, m10.12, data = d.pred) 
+lambda.med <- apply(lambda.pred.l$link, 2, median) 
+lambda.PI <- apply(lambda.pred.l$link, 2, PI) 
+
+# plot again 
+lines(log_pop.seq, lambda.med, lty = 2) 
+shade(lambda.PI, log_pop.seq, col = col.alpha("black", 0.1))
+
+```
+
+In the plot above the shaded blue region is for islands with high contact, and the shaded grey region is for islands with low contact. 
+
+
+## 10.2.2 | MCMC Islands 
+
+```{r}
+m10.10stan <- map2stan(m10.10, iter = 3000, warmup = 1000, chains = 4, cores = 4)
+precis(m10.10stan)
+pairs(m10.10stan)
+```
+
+Centering predictors can aid in inference by reducing correlations among parameters. We can see in the pairs plot above there is some correlation going on.
+
+```{r}
+# construct centered predictor 
+d$log_pop_c <- d$log_pop - mean(d$log_pop) 
+
+# re estimate 
+m10.10stan.c <- map2stan(
+  alist(
+    total_tools ~ dpois(lambda), 
+    log(lambda) <- a + bp*log_pop_c + bc * contact_high + bcp * log_pop_c * contact_high, 
+    a ~ dnorm(0, 10), 
+    bp ~ dnorm(0, 1), 
+    bc ~ dnorm(0, 1), 
+    bcp ~ dnorm(0, 1)
+  ), data = d, iter = 3000, warmup = 1000, chains = 4, cores = 4
+)
+
+precis(m10.10stan.c)
+
+pairs(m10.10stan.c)
+
+```
+
+The estimates will look different due to centering, but the predictions will remain the same. With centering, our chains will be more efficient and produce more samples. 
+
+## 10.2.3 | Example: Exposure and the Offset 
+
+In this last Poisson example, we will look at a case where the exposure varies across observations. When the length of observation, area of sampling, or intensity of sampling varies, the counts we observe may also naturally vary. Since a Poisson assumes that the rate of events is constant in time or space, its easy to handle this. 
+
+What we need to do is to add the log of the exposure to the linear model. The term we add is typically called an offset. 
+
+```{r}
+# simulate a month of daily counts 
+num_days <- 30 
+y <- rpois(num_days, 1.5)
+
+# simulate on a weekly basis 
+num_weeks <- 4 
+y_new <- rpois(num_weeks, 0.5 * 7)
+
+# build a data frame to organize the counts 
+y_all <- c(y, y_new) 
+exposure <- c(rep(1, 30), rep(7, 4)) 
+monastery <- c(rep(0, 30), rep(1, 4)) 
+d <- data.frame(y = y_all, days = exposure, monastery = monastery)
+
+# compute the offset 
+d$log_days <- log(d$days)
+
+# fit the model 
+m10.15 <- map(
+  alist(
+    y ~ dpois(lambda), 
+    log(lambda) <- log_days + a + b * monastery, 
+    a ~ dnorm(0, 100), 
+    b ~ dnorm(0, 1)
+  ), data = d
+)
+
+# compute the posterior distributions of lambda in each monastery 
+
+# sample from posterior 
+post <- extract.samples(m10.15) 
+
+# use the linear model without offset. We don't use offset gain because the parameters are already on the daily scale for both monasteries 
+lambda_old <- exp(post$a) 
+lambda_new <- exp(post$a + post$b) 
+precis(data.frame(lambda_old, lambda_new))
+```
+
+# 10.3 | Other Count Regressions 
+
+In this final section, we will meet 4 other count regressions: multionomial, geometric, negative-binomial, and beta-binomial. 
+Multinomial and Geometric are maximum entropy models under their own unique constraints, and Negative Binomial and Beta Binomial are mixture models. 
+
+## 10.3.1 | Multinomial 
+
+**Multinomial Distribution** is a maximum entropy distribution that is used when there are more than two types of unordered events, and the probability of each type of event is constant across trials. 
+
+If there are $k$ types of events with probabilities $p_1, ..., p_k$, then the probability of observing $y_1, ..., y_k$ events of each type out of $n$ total trials is: 
+
+$Pr(y_1, ..., y_k | n, p_1, ..., p_k) = \frac{n!}{\Pi_i y_i!} \Pi_{i = 1}^{K} p_i^{y_i}$ 
+
+The fraction with n! on top just expressed the number of different orderings that give the same counts $y_1, ..., y_k$. 
+
+A model built on a multinomial distribution may also be called a *Categorical Regression*, usually when each event is isolated on a single row, like with logistic regression. In machine learning, this model type is sometimes known as the *Maximum Entropy Classifier*. 
+
+Building a GLM from a multinomial likelihood is complicated because as the event types multiply, so too do our modeling choices. There are also two different approaches to constructing the likelihoods as well - 
+  1. Multionomial likelihood with a generalization of the logit link. This is called the *explicit* approach. 
+  2. Transforming the multinomial likelihood into a series of Poisson likelihoods. 
+  
+### 10.3.1.1 | Explicit Multinomial Models 
+
+The conventional and natural link in this context is the multinomial logit. This link function takes a vector of scores, one for each of K event types, and computes the probability of a particular type of event k as: 
+
+$Pr(k | s_1, s_2, ..., s_k) = \frac{\exp(s_k)}{\sum_{i = 1}^{K}\exp(s_i)}$ 
+
+This is called the softmax function in the rethinking package. Combined with this link, the type of GLM is called multinomial logistic regression. 
+
+There are two basic cases: 
+  1. Predictors have different values for different types of events 
+  2. Parameters are distinct for each type of event 
+
+Heres a simulated example. This code simulates career choice from three different careers, each with its own income trait. These traits are used to assign a score to each type of event. When the model is fit to the data, one of these scores is held constant and the other two scores are estimated using the known income traits. 
+
+#### First Case - predictors have different values for different types of events 
+
+```{r}
+# simulate career choices among 500 individuals 
+N <- 500                 # number of individuals 
+income <- 1:3            # expected income of each career
+score <- 0.5 * income    # scores for each career, based on income 
+p <- softmax(score[1], score[2], score[3])  # converts scores to probabilities
+
+# now simulate choice. outcome career holds event type values, not counts 
+career <- rep(NA, N)     # empty vector of choices for each individual 
+
+# sample chosen career for each individual 
+for (i in 1:N) career[i] <- sample(1:3, size = 1, prob = p)
+
+# fit the model, using dcategorical and softmax link 
+m10.16 <- map(
+  alist(
+    career ~ dcategorical(softmax(0, s2, s3)), 
+    s2 <- b*2,         # linear model for event type 2
+    s3 <- b*3,         # linear model for event type 3
+    b ~ dnorm(0, 5)
+  ), data = list(career = career)
+)
+```
+
+#### Second case - parameters are distinct for each type of event 
+
+Suppose we are still modeling career choice, but now we want to estimate the association between each person's family income and which career they choose. This provides an estimate of the impact of family income on choice, for each type of career
+
+```{r}
+N <- 100 
+
+# simulate family incomes for each individual 
+family_income <- runif(N) 
+
+# assign a unique coefficient for each type of event 
+b <- (1:-1) 
+
+# empty vector of choices for each individual 
+career <- rep(NA, N) 
+
+for (i in 1:N){
+  score <- 0.5 * (1:3) + b * family_income[i]
+  p <- softmax(score[1], score[2], score[3]) 
+  career[i] <- sample(1:3, size = 1, prob = p) 
+}
+
+# fit model 
+m10.17 <- map(
+  alist(
+    career ~ dcategorical(softmax(0, s2, s3)), 
+    s2 <- a2 + b2 * family_income, 
+    s3 <- a3 + b3 * family_income, 
+    c(a2, a3, b2, b3) ~ dnorm(0, 5)
+  ), data = list(career = career, family_income = family_income)
+)
+```
+
+### 10.3.1.2 | Multinomial in disguise as Poisson 
+
+Another way to fit a multinomial likelihood is to refactor it into a series of Poisson likelihoods. 
+
+```{r}
+# load data
+data(UCBadmit)
+d <- UCBadmit 
+```
+
+Now we can use a Poisson regression to model both the rate of admission and the rate of rejection. Then we'll compare the inference to the binomial model's probability of admission.
+ 
+```{r}
+# binomial model of overall admission probability 
+m_binom <- map(
+  alist(
+    admit ~ dbinom(applications, p), 
+    logit(p) <- a, 
+    a ~ dnorm(0, 100)
+  ), data = d
+)
+
+# poisson model of overall admission rate and rejection rate 
+d$rej <- d$reject  # reject is a reserved word 
+
+m_pois <- map2stan(
+  alist(
+    admit ~ dpois(lambda1), 
+    rej ~ dpois(lambda2), 
+    log(lambda1) <- a1, 
+    log(lambda2) <- a2, 
+    c(a1, a2) ~ dnorm(0, 100)
+  ), data = d, chains = 3, cores = 4
+)
+```
+
+```{r}
+# inferred binomial probability of admission, across the entire dataset 
+logistic(coef(m_binom)) 
+
+# implied probability of admission given by the poisson model 
+k <- as.numeric(coef(m_pois)) 
+exp(k[1]) / (exp(k[1]) + exp(k[2]))
+```
+
+As we can see, they are essentially the same. 
+
+## 10.3.2 | Geometric 
+
+Sometimes a count variable is a number of events up until something happened. We call this final event the terminating event, and we often want to model the probability of that event. 
+
+This kind of analysis is known as *Event History Analysis* or *Survival Analysis*. 
+
+When the probability of the terminating event is constant through time (or distance) and the units of time (or distance) are discrete, a common likelihood function is the **Geometric Distribution**. 
+
+This distribution has the maximum entropy for unbounded counts with constant expected value. 
+
+```{r}
+# simulate 
+N <- 100 
+x <- runif(N) 
+y <- rgeom(N, prob = logistic(-1 + 2 * x))
+
+# estimate 
+m10.18 <- map(
+  alist(
+    y ~ dgeom(p), 
+    logit(p) <- a + b*x, 
+    a ~ dnorm(0, 10), 
+    b ~ dnorm(0, 1)
+  ), data = list(y = y, x = x)
+)
+
+precis(m10.18)
+
+```
+
+
