@@ -1,0 +1,365 @@
+---
+title: "Ch11_Monsters_and_Mixtures"
+author: "Michael Rose"
+date: "July 1, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this chapter we will look at hybrid models which are mixtures of other models. 
+
+We will consider two common and useful examples: 
+
+*Ordered Categorical Model* - Useful for categorical outcomes with a fixed ordering. This is built by merging a categorical likelihood function with a special kind of link function, usually a *cumulative link*. 
+
+*Zero Inflated* and *Zero Augmented* models. These mix a binary event with an ordinary GLM likelihood like a Poisson or Binomial. 
+
+# 11.1 | Ordered Categorical Outcomes 
+
+In principle, an ordered categorical variable is just a multinomial prediction problem, but the constraint that the categories must be ordered demands a special treatment. 
+
+The conventional solution is to use a cumulative link function. By linking a linear model to cumulative probability, it is possible to guarantee the ordering of outcomes. 
+
+Step 1 is to explain how to parameterize a distribution of outcomes on the scale of log-cumulative-odds. 
+Step 2 is to introduce a predictor (or more than one) to these log-cumulative-odds values, allowing us to model associations between predictors and the outcome while obeying the ordered nature of prediction. 
+
+## 11.1.1 | Example: Moral Intuition 
+
+```{r}
+library(rethinking)
+data(Trolley)
+d <- Trolley
+str(Trolley)
+```
+
+## 11.1.2 | Describing an ordered distribution with intercepts 
+
+```{r}
+simplehist(d$response, xlim = c(1, 7), xlab = "response")
+```
+
+Our goal is to redescribe the histogram on the log cumulative odds scale. This means constructing the odds of a cumulative probability, then taking a logarithm. 
+
+```{r}
+# compute cumulative probabilities from the histogram 
+
+# discrete proportion of each response variable 
+pr_k <- table(d$response) / nrow(d)
+
+# cumsum converts to cumulative proportions 
+cum_pr_k <- cumsum(pr_k)
+
+# plot 
+plot(1:7, cum_pr_k, type = "b", xlab = "response", ylab = "cumulative proportion", ylim = c(0, 1))
+
+```
+
+```{r}
+# to redescribe the histogram as log-cumulative odds, we need a series of intercept parameters. Each intercept will be on the log-cumulative-odds scale and stand in for the cumulative probability of each outcome. This is an application of the link function 
+logit <- function(x) log(x / (1-x)) # convenience function 
+(lco <- logit(cum_pr_k))
+
+# plot 
+plot(1:7, lco, type = "b", xlab = "response", ylab = "log-cumulative-odds")
+```
+
+Conventions for writing mathematical forms of the ordered logit vary alot, but here is one way: 
+
+$R_I \sim \mathrm{Ordered}(p)$            # likelihood
+$\mathrm{logit}(p_k) = \alpha_k$          # Cumulative link and linear model
+$\alpha_k \sim \mathrm{Normal}(0, 10)$    # Common prior for each intercept 
+
+```{r}
+# fit the basic model 
+m11.1 <- map(
+  alist(
+    response ~ dordlogit(phi, c(a1, a2, a3, a4, a5, a6)), 
+    phi <- 0, 
+    c(a1, a2, a3, a4, a5, a6) ~ dnorm(0, 10)
+  ), data = d, start = list(a1 = -2, a2 = -1, a3 = 0, a4 = 1, a5 = 2, a6 = 2.5)
+)
+
+# check coefficients
+precis(m11.1)
+
+# to get cumulative probabilities back 
+logistic(coef(m11.1))
+
+```
+```{r}
+# fit model with stan 
+
+# note that data with name 'case' not allowed in Stan, so we will pass pruned data list 
+m11.1stan <- map2stan(
+  alist(
+    response ~ dordlogit(phi, cutpoints), 
+    phi <- 0, 
+    cutpoints ~ dnorm(0, 10)
+  ), data = list(response = d$response), start = list(cutpoints = c(-2, -1, 0, 1, 2, 2.5)), chains = 2, cores = 4
+)
+
+# need depth = 2 to show vectors of parameters 
+precis(m11.1stan, depth = 2)
+
+```
+
+## 11.1.3 | Adding predictor variables 
+
+```{r}
+# calculate likelihoods 
+pk <- dordlogit(1:7, 0, coef(m11.1)) 
+
+# these probabilities imply an average outcome of 
+sum(pk * (1:7))
+
+# subtracting 0.5 from each 
+pk <- dordlogit(1:7, 0, coef(m11.1) - 0.5)
+
+# the expected value is now 
+sum(pk * (1:7))
+```
+
+```{r}
+# fit the model by adding the slopes and predictor variables to the phi parameter inside logit 
+m11.2 <- map(
+  alist(
+    response ~ dordlogit(phi, c(a1, a2, a3, a4, a5, a6)), 
+    phi <- bA * action + bI * intention + bC * contact,
+    c(bA, bI, bC) ~ dnorm(0, 10), 
+    c(a1, a2, a3, a4, a5, a6) ~ dnorm(0, 10)
+    ), data = d, start = list(a1 = -1.9, a2 = -1.2, a3 = -0.7, a4 = 0.2, a5 = 0.9, a6 = 1.8) # use m11.1 estimates for starts 
+)
+```
+
+```{r}
+# fit interaction model 
+m11.3 <- map(
+  alist(
+    response ~ dordlogit(phi, c(a1, a2, a3, a4, a5, a6)), 
+    phi <- bA * action + bI * intention + bC * contact + bAI * action * intention + bCI * contact * intention, 
+    c(bA, bI, bC, bAI, bCI) ~ dnorm(0, 10), 
+    c(a1, a2, a3, a4, a5, a6) ~ dnorm(0, 10)
+  ), data = d, start = list(a1 = -1.9, a2 = -1.2, a3 = -0.7, a4 = 0.2, a5 = 0.9, a6 = 1.8)
+)
+```
+
+```{r}
+# compare models 
+coeftab(m11.1, m11.2, m11.3)
+```
+
+The first 6 rows are $\alpha$ intercepts, one for each value below the maximum of 7. These can't really be interpreted on their own, unless we are used to reading log-odds values. They define the relative frequencies of the outcomes, when all predictor variables are set to zero. So they are intercepts as in simpler models. 
+
+The next 5 rows are various slope parameters. We can check to see if they are very far from 0. Since all the slopes are negative, it implies that each factor/interaction reduces the average response. 
+
+```{r}
+# compare models using WAIC 
+compare(m11.1, m11.2, m11.3, refresh = 0.1)
+```
+
+We can see that 11.3 gets all of the weight from WAIC. 
+
+```{r}
+# compute sample from posterior 
+post <- extract.samples(m11.3)
+
+# make an empty plot 
+plot(1, 1, type = "n", xlab = "intention", ylab = "probability", xlim = c(0, 1), ylim = c(0, 1), xaxp = c(0, 1, 1), yaxp = c(0, 1, 2)) 
+
+# loop over first 100 samples in post and plot predictions across values of intention 
+kA <- 0 # action value 
+kC <- 1 # contact value 
+kI <- 0:1 # values of intention to calculate over 
+
+for (s in 1:100){
+  p <- post[s,] 
+  ak <- as.numeric(p[1:6])
+  phi <- p$bA*kA + p$bI*kI + p$bC*kC + p$bAI*kA*kI + p$bCI*kC*kI 
+  pk <- pordlogit(1:6, a = ak, phi = phi) 
+  for (i in 1:6) 
+    lines(kI, pk[,i], col = col.alpha(rangi2, 0.1))
+}
+mtext(concat("action = ", kA, ", contact = ", kC))
+```
+
+# 11.2 | Zero-inflated Outcomes
+
+Very often, the things we can measure are not emissions from any pure process. Instead they are mixtures of multiple processes. Whenever there are different causes for the same observation, then a *mixture model* may be useful. 
+
+*Mixture Models* use more than one simple probability distribution to model a mixture of causes. In effect, these models use more than one likelihood for the same outcome variable. 
+
+Count variables are especially prone to needing a mixture treatment because a count of zero can often arise in more than one way. In this case, a zero means that nothing happened, and this can be because the rate of an event is low or the process that generates events failed to get started. 
+
+## 11.2.1 | Example: Zero Inflated Poisson 
+
+We want to make a mixture model to model monks drinking. Basically monks either make n books or drink, but there will be days where monks don't drink and complete zero books. 
+
+We can make a mixture model to solve this problem where any zero in the data can arise from two processes:
+  1. The monks spend the day drinking 
+  2. They worked that day but failed to complete a manuscript.
+
+We need to create a likelihood function that mixes these two processes. We can model the monks drinking as a coin flip with probability p that it lands on drinking. We can also model working monks as a poisson number of completed manuscripts with some average rate $\lambda$. Then the likelihood or observing a zero is $Pr(0|p, \lambda) = Pr(drink | p) + Pr(work | p) * Pr(0 | \lambda) = p + (1-p)\exp(-\lambda)$. We can read this as: 
+The probability of observing a zero is the probability that the monks didn't drink or the probability that the monks worked and failed to finish anything. 
+
+Defining ZIPoisson as the distribution above, we can write the regression in the following form: 
+$y_i \sim \mathrm{ZIPoisson}(p_i, \lambda_i)$ 
+$\mathrm{logit}(p_i) = \alpha_p + \beta_p x_i$ 
+$\log(\lambda_i) = \alpha_\lambda + \beta_\lambda x_i$ 
+
+There are two linear models and two link functions, one for each process in the zero inflated poisson. 
+
+```{r}
+# define parameters 
+prob_drink <- 0.2 # 20% of days 
+rate_work <- 1
+
+# sample 1 year of production 
+N <- 365 
+
+# simulate days monks drink 
+drink <- rbinom(N, 1, prob_drink) 
+
+# simulate manuscripts completed 
+y <- (1-drink)*rpois(N, rate_work)
+```
+
+The outcome variable we observe is y, which is a list of counts of completed manuscripts, one count for each day of the year. 
+
+```{r}
+simplehist(y, xlab = "manuscripts completed", lwd = 4) 
+zeros_drink <- sum(drink) 
+zeros_work <- sum(y == 0 & drink == 0) 
+zeros_total <- sum(y == 0) 
+lines(c(0, 0), c(zeros_work, zeros_total), lwd = 4, col = rangi2)
+```
+
+In the plot above, the zeros produced by drinking are shown in blue. The total number of zeros is inflated relative to a typical poisson distribution. 
+
+```{r}
+# fit the model 
+m11.4 <- map(
+  alist(
+    y ~ dzipois(p, lambda), 
+    logit(p) <- ap, 
+    log(lambda) <- al, 
+    ap ~ dnorm(0, 1), 
+    al ~ dnorm(0, 10)
+  ), data = list(y = y)
+)
+
+# check coefficients
+precis(m11.4)
+
+# on the natural scale, map estimates: 
+
+# probability drink 
+logistic(-1.39)
+
+# rate manuscripts are finished when not drinking 
+exp(0.05)
+```
+
+#### Overthinking: Zero Inflated Poisson distribution function 
+
+```{r}
+# implementation 
+dzip <- function(x, p, lambda, log = TRUE){
+  ll <- ifelse(
+    x == 0, 
+    p + (1-p)*exp(-lambda), 
+    (1-p)*dpois(x, lambda, FALSE)
+  )
+  if (log == TRUE) ll <- log(ll)
+  return (ll)
+}
+```
+
+# 11.3 | Over-dispersed Outcomes 
+
+If something important for making useful inferences has been omitted from a count model, we get overdispersion. The variance of a variable is sometimes called its dispersion. So for a counting process like the binomial, the variance is a function of the same parameters as the expected value.
+
+For example, the expected value of a binomial is np and its variance is np(1-p). When the observed variance exceeds this amount - after conditioning on all the predictor variables - this implies that some omitted variable is producing additional dispersion in the observed counts. 
+
+If we ignore overdispersion, we can be confronted with any kind of problem we would see when ignoring a predictor variable. Heterogeneity in counts can be a confound, hiding effects of interest or producing spurious inferences. 
+
+When we can't find the missing variable, its possible to mitigate the effects of overdispersion with two common strategies. 
+
+The first strategy is to use a **Continuous Mixture Model** in which a linear model is attached not to the observations themselves, but rather to a distribution of observations. Examples of these models include the beta-binomial and gamma-poisson (negative binomial) models. 
+
+The second strategy is to employ multi level models and estimate both the residuals of each observation and the distribution of those residuals. In practice it is often easier to use multilevel models in place of beta binomial and gamma poisson glms. 
+
+## 11.3.1 | Beta-Binomial
+
+A *beta-binomial* model assumes that each binomial count observation has its own probability of a success. The model estimates the distribution of probabilities of success across cases, instead of a single probability of success. Predictor variables change the shape of this distribution, instead of directly determining the probability of each success. 
+
+```{r}
+pbar <- 0.2
+theta <- 10
+curve(dbeta2(x, pbar, theta), from = 0, to = 1, xlab = "probability", ylab = "density")
+```
+
+We will bind our linear model to p, so that changes in predictor variables change the central tendency of the distribution. In mathematical form: 
+
+$A_i \sim \mathrm{BetaBinomial}(n_i, p_i, \theta)$ 
+$\mathrm{logit}(p_i) = \alpha$ 
+$\alpha \sim \mathrm{Normal}(0, 10)$ 
+$\theta \sim \mathrm{HalfCauchy}(0, 1)$ 
+
+Where the outcome A is admit, the size n is applications. 
+
+```{r}
+# load data 
+data(UCBadmit)
+d <- UCBadmit
+
+m11.5 <- map2stan(
+  alist(
+    admit ~ dbetabinom(applications, pbar, theta), 
+    logit(pbar) <- a,
+    a ~ dnorm(0, 2), 
+    theta ~ dexp(1)
+  ), data = d, constraints = list(theta = "lower = 0"), start = list(theta = 3), iter = 4000, warmup = 1000, chains = 2, cores = 2
+)
+
+# view coefficients
+precis(m11.5)
+
+# sample from posterior 
+post <- extract.samples(m11.5) 
+quantile(logistic(post$a), c(0.025, 0.5, 0.975)) 
+
+# draw posterior mean beta distribution 
+curve(dbeta2(x, mean(logistic(post$a)), mean(post$theta)), from = 0, to = 1, ylab = "Density", xlab = "Probability Admit", ylim = c(0, 3), lwd = 2)
+
+# draw 100 beta distributions sampled from posterior 
+for (i in 1:100){
+  p <- logistic(post$a[i]) 
+  theta <- post$theta[i] 
+  curve(dbeta2(x, p, theta), add = TRUE, col = col.alpha("black", 0.2))
+}
+
+```
+
+In the plot above we see the posterior distribution of beta distributions from m11.5. The thick curve is the posterior mean beta distribution. The lighter curves represent 100 combinations of p and theta sampled from the posterior. 
+
+To get a sense of how the beta distribution of probabilities of admission influences predicted counts of applications admitted, lets look at the posterior check
+
+```{r}
+postcheck(m11.5)
+```
+
+In the plot above the vertical axis shows the predicted proportion admitted for each case on the horizontal. The blue points show the empirical proportion admitted on each row of the data. The open circles are the posterior mean p, with 89% percentile interval and the + symbols mark the 89% interval of predicted counts of admission. 
+
+## 11.3.2 | Negative Binomial or Gamma-Poisson 
+
+```{r}
+mu <- 5
+theta <- 0.1
+curve(dgamma2(x, mu, theta), from = 0, to = 10)
+```
+
+As theta approaches zero, the gamma distribution approaches a gaussian distribution with the same mean value. A linear model of the mean can be attaches to mu by using a log link function. There are examples of this model being fit in ?dgampois 
+
