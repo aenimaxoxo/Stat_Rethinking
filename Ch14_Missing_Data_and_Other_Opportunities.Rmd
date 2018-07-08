@@ -1,0 +1,240 @@
+---
+title: "Ch14_Missing_Data_and_Other_Opportunities"
+author: "Michael Rose"
+date: "July 7, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rethinking)
+```
+
+# 14 | Missing Data and Other Opportunities 
+
+```{r}
+# pancake simulation 
+sim_pancake <- function(){
+  pancake <- sample(1:3, 1)
+  sides <- matrix(c(1,1,1,0,0,0), 2, 3)[, pancake]
+  sample(sides)
+}
+
+# sim 10,000 pancakes 
+pancakes <- replicate(1e4, sim_pancake())
+up <- pancakes[1,]
+down <- pancakes[2,]
+
+# compute proportion 1/1 (BB) out of all 1/1 and 1/0 
+num_11_10 <- sum(up == 1)
+num_11 <- sum(up == 1 & down == 1) 
+num_11 / num_11_10
+```
+
+In this chapter, we will meet two commonplace applications of an assume and deduce strategy. The first is incorporation of *Measurement Error* into our models. The second is the estimation of *Missing Data* through *Bayesian Imputation*. 
+
+# 14.1 | Measurement Error 
+
+```{r}
+data(WaffleDivorce)
+d <- WaffleDivorce
+
+# points 
+plot(d$Divorce ~ d$MedianAgeMarriage, ylim = c(4, 15), xlab = "Median Age Marriage", ylab = "Divorce Rate") 
+
+# standard errors 
+for (i in 1:nrow(d)){
+  ci <- d$Divorce[i] + c(-1, 1) * d$Divorce.SE[i]
+  x <- d$MedianAgeMarriage[i] 
+  lines(c(x, x), ci)
+}
+```
+
+In the plot above we see the median age of marriage against divorce rate, and their errors. For larger states, the error bars tend to be lower and the results more certain. 
+
+## 14.1.1 | Error on the Outcome 
+
+To incorporate measurement error, recognize that we can replace the observed data for divorce rate with a distribution. Typical data is just a special case of a probability distribution for which all of the mass is piled up on a single value. When there is uncertainty about the true value, that uncertainty can be replaced by a distribution that represents the information we have. 
+
+We can consider the problem generatively. If we wanted to simulate measurement error, we would assign a distribution to each observation and sample from it. For example, suppose the true value of a measurement is 10 meters. If it is measured with Gaussian error with a sd of 2 meters, this implies a probability distribution for any realized measurement y as a Normal(10, 2) dist. As the measurement error shrinks, all the probability piles up on 10. When there is error, many measurements are more and less plausible. If we don't know the true value (10 here), then we can just put a parameter there and let Bayes do the rest. 
+
+To see how this works, we will do an example in which we use a Gaussian distribution with mean equl to the observed value and standard deviation equal to the measurement's standard error. The goal is to model divorce rate D as a linear function of age at marriage A and marriage rate R. Here is the model : 
+
+$D_{est, i} \sim \mathrm{Normal}(\mu_i, \sigma)$ Likelihood for estimates 
+$\mu_i = \alpha + \beta_a A_i + \beta_R R_i$ Linear Model 
+$D_{obs, i} \sim \mathrm{Normal}(D_{est, i}, D_{se, i})$ Prior for estimates 
+$\alpha \sim \mathrm{Normal}(0, 10)$ 
+$\beta_a \sim \mathrm{Normal}(0, 10)$
+$\beta_r \sim \mathrm{Normal}(0, 10)$
+$\sigma \sim \mathrm{Cauchy}(0, 2.5)$ 
+
+The only difference between this model and a typical linear regression is replacing the outcome with a vector of parameters. Each outcome parameter also gets a second role as the unknown mean of another distribution, one that predicts the observed measurement. A cool implication that will arise here is that information flows in both directions - the uncertainty in measurement influences the regression parameters in the linear model, and the regression parameters in the linear model also influence the uncertainty in the measurements. 
+
+```{r}
+# create list of variables for data 
+dlist <- list(
+  div_obs = d$Divorce, 
+  div_sd = d$Divorce.SE, 
+  R = d$Marriage, 
+  A = d$MedianAgeMarriage
+)
+
+# fit model 
+m14.1 <- map2stan(
+  alist(
+    div_est ~ dnorm(mu, sigma), 
+    mu <- a + bA * A + bR * R, 
+    div_obs ~ dnorm(div_est, div_sd), 
+    a ~ dnorm(0, 10), 
+    bA ~ dnorm(0, 10), 
+    bR ~ dnorm(0, 10), 
+    sigma ~ dcauchy(0, 2.5)
+  ), data = dlist, start = list(div_est = dlist$div_obs), WAIC = FALSE, iter = 5000, warmup = 1000, chains = 2, cores = 2, control = list(adapt_delta = 0.95)
+)
+
+precis(m14.1, depth = 2)
+```
+
+There are three things to notice about our model fitting code: 
+  1. WAIC calculation is turned off. This is because the default code in WAIC will not compute the likelihood correctly, by integrating over the uncertainty in each div_est distribution 
+  2. A start list is provided for each div_est value. This tells map2stan exactly how many parameters it needs. 
+  3. There is a control list at the end. This allows us to tune the HMC algorithm. In this case, adapt_delta went from the default of 0.8 to 0.95. This means that Stan will work harder during warmup and potentially sample more efficiently. 
+  
+Now for the output: 
+  - Our estimate for bA in chapter 5 was about -1. Compared to the original regression that ignores measurement error, the association between divorce and age at marriage has been reduced. Ignoring measurement error tends to exaggerate associations between     outcomes and predictors. It may also mask an association, depending upon which cases have how much error. 
+  
+## 14.1.2 | Error on both outcome and predictor 
+
+When there is measurement error on predictor variables and outcomes, the approach is the same. We consider the problem generatively: Each observed predictor value is a draw from a distribution with an unknown mean, the true value, but known standard deviation. So we define a vector of parameters, one for each unknown true value, and then make those parameters the means of a family of Gaussian distributions with known standard deviations. 
+
+In the divorce data, the measurement error for the marriage rate predictor variable also comes as standard error. So lets incorporate that information. Here is the updated model : 
+
+$D_{est, i} \sim \mathrm{Normal}(\mu_i, \sigma)$ Likelihood for estimates 
+$\mu_i = \alpha + \beta_a A_i + \beta_R R_{est, i}$ Linear Model 
+$D_{obs, i} \sim \mathrm{Normal}(D_{est, i}, D_{se, i})$ Prior for outcome estimates 
+$R_{obs, i} \sim \mathrm{Normal}(R_{est, i}, R_{se, i})$ Prior for predictor estimates
+$\alpha \sim \mathrm{Normal}(0, 10)$ 
+$\beta_a \sim \mathrm{Normal}(0, 10)$
+$\beta_r \sim \mathrm{Normal}(0, 10)$
+$\sigma \sim \mathrm{Cauchy}(0, 2.5)$ 
+
+The R_est parameters will hold the posterior distributions of the true marriage rates. 
+
+```{r}
+# fitting the model 
+dlist <- list(
+  div_obs = d$Divorce, 
+  div_sd = d$Divorce.SE, 
+  mar_obs = d$Marriage, 
+  mar_sd = d$Marriage.SE, 
+  A = d$MedianAgeMarriage
+)
+
+m14.2 <- map2stan(
+  alist(
+    div_est ~ dnorm(mu, sigma), 
+    mu <- a + bA * A + bR * mar_est[i], 
+    div_obs ~ dnorm(div_est, div_sd), 
+    mar_obs ~ dnorm(mar_est, mar_sd), 
+    a ~ dnorm(0, 10), 
+    bA ~ dnorm(0, 10), 
+    bR ~ dnorm(0, 10), 
+    sigma ~ dcauchy(0, 2.5)
+  ), data = dlist, start = list(div_est = dlist$div_obs, mar_est = dlist$mar_obs), WAIC = FALSE, iter = 5000, warmup = 1000, chains = 3, cores = 4, control = list(adapt_delta = 0.95)
+)
+
+precis(m14.2, depth = 2)
+```
+
+# 14.2 | Missing Data 
+
+## 14.2.1 | Imputing Neocortex 
+
+We are going to build an example of **MCAR (Missing Completely At Random)** imputation. With MCAR, we assume that the location of the missing values is completely random with respect to those values and all other values in the data. 
+The trick to imputation is to simultaneously model the predictor variable that has missing values together with the outcome variable. The present values will produce estimates that comprise a prior for each missing value. These priors
+will then be updated by the relationship between the predictor and outcome - so there will be a posterior distribution for each missing value. 
+
+Our imputation prior will be $N_i \sim \mathrm{Normal}(v, \sigma_N)$ 
+
+```{r}
+# load data 
+data(milk)
+d <- milk
+d$neocortex.prop <- d$neocortex.perc / 100 
+d$logmass <- log(d$mass)
+
+# prep data 
+data_list <- list(
+  kcal = d$kcal.per.g, 
+  neocortex = d$neocortex.prop, 
+  logmass = d$logmass
+)
+
+# fit model 
+m14.3 <- map2stan(
+  alist(
+    kcal ~ dnorm(mu, sigma), 
+    mu <- a + bN * neocortex + bM * logmass, 
+    neocortex ~ dnorm(nu, sigma_N), 
+    a ~ dnorm(0, 100), 
+    c(bN, bM) ~ dnorm(0, 10),
+    nu ~ dnorm(0.5, 1), 
+    sigma_N ~ dcauchy(0, 1), 
+    sigma ~ dcauchy(0, 1)
+  ), data = data_list, iter = 1e4, chains = 2, cores = 4
+)
+
+precis(m14.3, depth = 2)
+```
+
+Each of the 12 imputed distributions for missing values is shown here, along with ordinary regression parameters below them. To see how including all cases has impacted inference, lets do a quick comparison to the estimates that drop missing cases. 
+
+```{r}
+# prep data 
+dcc <- d[complete.cases(d$neocortex.prop), ]
+data_list_cc <- list(
+  kcal = dcc$neocortex.prop, 
+  logmass = dcc$logmass
+)
+
+# fit model 
+m14.3cc <- map2stan(
+  alist(
+        kcal ~ dnorm(mu,sigma),
+        mu <- a + bN*neocortex + bM*logmass,
+        a ~ dnorm(0,100),
+        c(bN,bM) ~ dnorm(0,10),
+        sigma ~ dcauchy(0,1)
+        ), data=data_list_cc , iter=1e4 , chains=2, cores = 4)
+
+precis(m14.3cc)
+```
+
+By including the incomplete cases, the posterior mean for neocortex has gone from 2.8 to 1.9, and the mean for body mass has diminished from -0.1 to -0.07. So by using all the cases we ended up with a weaker inferred relationship --- but we used all the data. 
+
+## 14.2.2 | Improving the Imputation Model 
+
+In this case we will change our imputation model to:
+$N_i \sim \mathrm{Normal}(v_i, \sigma_N)$ 
+$v_i = \alpha_N + \gamma_M \log(M_i)$
+
+Where $\alpha_N$ and $\gamma_M$ now describe the linear relationship between the neocortex and log mass. The objective is to extract information from the observed cases and exploit it to improve the estimates of the missing values inside N. 
+
+```{r}
+m14.4 <- map2stan(
+  alist(
+    kcal ~ dnorm(mu, sigma), 
+    mu <- a + bN * neocortex + bM * logmass, 
+    neocortex ~ dnorm(nu, sigma_N), 
+    nu <- a_N + gM * logmass, 
+    a ~ dnorm(0, 100), 
+    c(bN, bM, gM) ~ dnorm(0, 10), 
+    a_N ~ dnorm(0.5, 1), 
+    sigma_N ~ dcauchy(0, 1), 
+    sigma ~ dcauchy(0, 1)
+  ), data = data_list, iter = 1e4, chains = 2, cores = 4
+)
+
+precis(m14.4, depth = 2)
+```
+
